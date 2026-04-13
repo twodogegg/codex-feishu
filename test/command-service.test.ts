@@ -12,7 +12,11 @@ import type { WorkspaceRecord } from "../src/types/db.ts";
 type FakeThreadSummary = {
   id: string;
   name: string;
+  preview?: string | null;
   status: string;
+  cwd?: string;
+  updatedAt?: number;
+  codexPath?: string | null;
 };
 
 function createFixture(options?: {
@@ -40,13 +44,21 @@ function createFixture(options?: {
       return state.workerState;
     },
     async listThreads() {
-      return state.remoteThreads;
+      return state.remoteThreads.map((thread) => ({
+        cwd: worker.workspaceRoot,
+        updatedAt: Date.now(),
+        codexPath: null,
+        ...thread
+      }));
     },
     async startThread() {
       return {
         id: "thread_new",
         name: "New Thread",
-        status: "created"
+        status: "created",
+        cwd: worker.workspaceRoot,
+        updatedAt: Date.now(),
+        codexPath: null
       };
     },
     resumedThreadIds: [] as string[],
@@ -717,6 +729,64 @@ test("重启后会保留 session 绑定和 active thread", async () => {
     second.close();
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("/where 状态卡会展示最近线程并提供切换按钮", async () => {
+  const fixture = createFixture({
+    remoteThreads: [
+      {
+        id: "codex-thread-2",
+        name: "第二条对话",
+        preview: "请帮我修复 workspace 卡片交互",
+        status: "created",
+        updatedAt: 200
+      },
+      {
+        id: "codex-thread-1",
+        name: "第一条对话",
+        preview: "先帮我看一下当前线程状态",
+        status: "created",
+        updatedAt: 100
+      }
+    ]
+  });
+
+  try {
+    await bindDefaultWorkspace(fixture);
+
+    const user = fixture.db.users.getByFeishuOpenId(fixture.session.actor.openId);
+    assert.ok(user);
+    const binding = fixture.db.sessionBindings.getBySession(user.id, fixture.session.chatId, null);
+    assert.ok(binding);
+
+    const activeRemote = fixture.db.threads.getByCodexThreadId("codex-thread-1");
+    assert.ok(activeRemote);
+    fixture.db.sessionBindings.upsert({
+      id: binding.id,
+      userId: binding.userId,
+      chatId: binding.chatId,
+      threadKey: binding.threadKey,
+      workspaceId: binding.workspaceId,
+      activeThreadId: activeRemote.id
+    });
+    fixture.db.workspaces.setLastActiveThreadId(binding.workspaceId!, activeRemote.id);
+    fixture.db.threads.setActiveThread(binding.workspaceId!, activeRemote.id);
+
+    const result = await fixture.service.executeText("/where", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.result.kind, "card");
+      const cardJson = JSON.stringify(result.result.card);
+      assert.match(cardJson, /线程列表/);
+      assert.match(cardJson, /第二条对话/);
+      assert.match(cardJson, /第一条对话/);
+      assert.match(cardJson, /workspace 卡片交互/);
+      assert.match(cardJson, /\/switch/);
+    }
+  } finally {
+    fixture.cleanup();
   }
 });
 

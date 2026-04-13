@@ -19,6 +19,7 @@ export type CodexThreadSummary = {
   id: string;
   cwd: string;
   name: string | null;
+  preview: string | null;
   status: string;
   updatedAt: number;
   codexPath: string | null;
@@ -121,6 +122,7 @@ export class CodexAppServerClient {
         id: string;
         cwd: string;
         name: string | null;
+        preview?: string | null;
         status: string;
         updatedAt: number;
         path: string | null;
@@ -148,6 +150,7 @@ export class CodexAppServerClient {
         id: string;
         cwd: string;
         name: string | null;
+        preview?: string | null;
         status: string;
         updatedAt: number;
         path: string | null;
@@ -402,6 +405,7 @@ function mapThreadSummary(thread: {
   id: string;
   cwd: string;
   name: string | null;
+  preview?: string | null;
   status: string;
   updatedAt: number;
   path: string | null;
@@ -409,11 +413,20 @@ function mapThreadSummary(thread: {
   return {
     id: thread.id,
     cwd: thread.cwd,
-    name: thread.name,
+    name: thread.name || thread.preview || null,
+    preview: thread.preview || null,
     status: thread.status,
-    updatedAt: thread.updatedAt,
+    updatedAt: normalizeTimestamp(thread.updatedAt),
     codexPath: thread.path
   };
+}
+
+function normalizeTimestamp(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  return value < 1_000_000_000_000 ? value * 1000 : value;
 }
 
 function isUnknownMethodError(error: unknown, methodName: string): boolean {

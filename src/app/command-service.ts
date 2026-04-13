@@ -226,7 +226,7 @@ async function handleBindCommand(
   );
 }
 
-function handleWhereCommand(context: HandlerContext): CommandResponse {
+async function handleWhereCommand(context: HandlerContext): Promise<CommandResponse> {
   const state = getCurrentBindingState(context);
   if (!state.binding || !state.workspace) {
     return messageResponse(
@@ -235,10 +235,15 @@ function handleWhereCommand(context: HandlerContext): CommandResponse {
     );
   }
 
+  const worker = ensureWorkspaceWorker(context, state.workspace);
+  await syncWorkspaceThreads(context, state.workspace, worker);
+  await hydrateRecentThreadPreviews(context, state.workspace, worker);
+  const nextState = getCurrentBindingState(context);
+
   return {
     kind: "card",
     title: "当前状态",
-    card: buildStatusCard(state.workspace, state.thread, context)
+    card: buildStatusCard(nextState.workspace!, nextState.thread, context)
   };
 }
 
@@ -301,10 +306,15 @@ async function handleWorkspaceStatusCommand(
     return bindResult;
   }
 
+  const worker = ensureWorkspaceWorker(context, state.workspace);
+  await syncWorkspaceThreads(context, state.workspace, worker);
+  await hydrateRecentThreadPreviews(context, state.workspace, worker);
+  const nextState = getCurrentBindingState(context);
+
   return {
     kind: "card",
     title: "当前状态",
-    card: buildStatusCard(state.workspace, state.thread, context)
+    card: buildStatusCard(nextState.workspace!, nextState.thread, context)
   };
 }
 
@@ -1062,7 +1072,7 @@ async function handleConversationInput(
 
     return messageResponse(
       "执行失败",
-      error instanceof Error ? error.message : String(error)
+      formatConversationFailure(error)
     );
   }
 
@@ -1103,6 +1113,19 @@ async function handleConversationInput(
       }
     });
   }
+}
+
+function formatConversationFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("stream disconnected before completion")) {
+    return [
+      "本次流式回复中途断开了。",
+      "这通常是上游模型服务或网络连接瞬时中断，不是你的消息格式问题。",
+      "可以直接重试一次；如果持续出现，我会继续把它做成自动重试。"
+    ].join("\n");
+  }
+
+  return message;
 }
 
 function ensureUser(
@@ -1333,6 +1356,12 @@ async function syncWorkspaceThreads(
       name: remoteThread.name,
       kind: "main",
       status: mapRemoteThreadStatus(remoteThread.status),
+      metadata: {
+        updatedAt: remoteThread.updatedAt,
+        codexPath: remoteThread.codexPath,
+        cwd: remoteThread.cwd,
+        preview: remoteThread.preview
+      },
       isActive:
         workspace.lastActiveThreadId != null &&
         existing?.id === workspace.lastActiveThreadId
@@ -1353,11 +1382,85 @@ async function ensureWorkspaceThread(
     name: created.name,
     kind: "main",
     status: "created",
+    metadata: {
+      updatedAt: created.updatedAt,
+      codexPath: created.codexPath,
+      cwd: created.cwd,
+      preview: created.preview
+    },
     isActive: true
   });
   context.db.threads.setActiveThread(workspace.id, thread.id);
   context.db.workspaces.setLastActiveThreadId(workspace.id, thread.id);
   return thread;
+}
+
+async function hydrateRecentThreadPreviews(
+  context: HandlerContext,
+  workspace: WorkspaceRecord,
+  worker: CodexWorkspaceWorker
+): Promise<void> {
+  const recentThreads = context.db.threads
+    .listByWorkspaceId(workspace.id)
+    .filter((thread) => thread.kind === "main")
+    .sort(compareThreadsForDisplay)
+    .slice(0, 6);
+
+  for (const thread of recentThreads) {
+    const existingPreview =
+      typeof thread.metadata.preview === "string" ? thread.metadata.preview.trim() : "";
+    const existingUserText =
+      typeof thread.metadata.lastUserText === "string"
+        ? thread.metadata.lastUserText.trim()
+        : "";
+    const existingAgentText =
+      typeof thread.metadata.lastAgentText === "string"
+        ? thread.metadata.lastAgentText.trim()
+        : "";
+    if (existingPreview && existingUserText && existingAgentText) {
+      continue;
+    }
+
+    try {
+      const response = (await readThreadWithAutoResume(
+        worker,
+        thread.codexThreadId
+      )) as {
+        thread?: {
+          turns?: Array<{
+            items?: Array<
+              | { type: "userMessage"; content?: Array<{ text?: string }> }
+              | { type: "agentMessage"; text?: string }
+            >;
+          }>;
+        };
+      };
+      const summary = extractThreadSummary(response);
+      if (!summary.preview && !summary.lastUserText && !summary.lastAgentText) {
+        continue;
+      }
+
+      context.db.threads.upsert({
+        id: thread.id,
+        workspaceId: thread.workspaceId,
+        codexThreadId: thread.codexThreadId,
+        name: thread.name,
+        kind: thread.kind,
+        parentThreadId: thread.parentThreadId,
+        status: thread.status,
+        isActive: thread.isActive,
+        lastTurnId: thread.lastTurnId,
+        metadata: {
+          ...thread.metadata,
+          ...(summary.preview ? { preview: summary.preview } : {}),
+          ...(summary.lastUserText ? { lastUserText: summary.lastUserText } : {}),
+          ...(summary.lastAgentText ? { lastAgentText: summary.lastAgentText } : {})
+        }
+      });
+    } catch {
+      continue;
+    }
+  }
 }
 
 function mapRemoteThreadStatus(status: string): ThreadRecord["status"] {
@@ -1447,6 +1550,12 @@ function buildStatusCard(
   thread: ThreadRecord | null,
   context: HandlerContext
 ): Record<string, unknown> {
+  const recentThreads = context.db.threads
+    .listByWorkspaceId(workspace.id)
+    .filter((candidate) => candidate.kind === "main")
+    .sort(compareThreadsForDisplay)
+    .slice(0, 6);
+
   return {
     schema: "2.0",
     config: {
@@ -1472,13 +1581,210 @@ function buildStatusCard(
           tag: "column_set",
           flex_mode: "none",
           columns: [
-            buildCommandButtonColumn("新线程", "/new", "primary"),
-            buildCommandButtonColumn("最近消息", "/message"),
-            buildCommandButtonColumn("Subagents", "/subagents")
+            buildCommandButtonColumn("新线程", "/new", "primary", {
+              kind: "panel",
+              action: "new_thread"
+            }),
+            buildCommandButtonColumn("刷新", "/where", undefined, {
+              kind: "panel",
+              action: "status"
+            }),
+            buildCommandButtonColumn("最近消息", "/message", undefined, {
+              kind: "panel",
+              action: "show_messages"
+            }),
+            buildCommandButtonColumn("Subagents", "/subagents", undefined, {
+              kind: "panel",
+              action: "open_threads"
+            })
           ]
-        }
+        },
+        {
+          tag: "hr"
+        },
+        {
+          tag: "markdown",
+          content: `**线程列表**（${recentThreads.length}）`
+        },
+        ...buildThreadRows(recentThreads, thread)
       ]
     }
+  };
+}
+
+function buildThreadRows(
+  threads: ThreadRecord[],
+  activeThread: ThreadRecord | null
+): Array<Record<string, unknown>> {
+  if (threads.length === 0) {
+    return [
+      {
+        tag: "markdown",
+        content: "暂无历史线程。"
+      }
+    ];
+  }
+
+  return threads.flatMap((thread, index) => {
+    const isCurrent = activeThread?.id === thread.id;
+    const rows: Array<Record<string, unknown>> = [
+      {
+        tag: "column_set",
+        flex_mode: "none",
+        columns: [
+          {
+            tag: "column",
+            width: "weighted",
+            weight: 5,
+            elements: [
+              {
+                tag: "markdown",
+                content: [
+                  `${isCurrent ? "🟢 当前线程" : "⚪ 历史线程"} · **${sanitizeCardMarkdown(thread.name || thread.id)}**`,
+                  `id: \`${thread.id}\``,
+                  `codex: \`${thread.codexThreadId}\``,
+                  `状态: \`${thread.status}\`${formatThreadUpdatedAt(thread)}`,
+                  formatThreadPreview(thread)
+                ].join("\n")
+              }
+            ]
+          },
+          {
+            tag: "column",
+            width: "auto",
+            elements: isCurrent
+              ? [
+                  {
+                    tag: "button",
+                    text: {
+                      tag: "plain_text",
+                      content: "最近消息"
+                    },
+                    type: "primary",
+                    value: {
+                      kind: "thread",
+                      action: "messages",
+                      command: "/message"
+                    }
+                  }
+                ]
+              : [
+                  {
+                    tag: "button",
+                    text: {
+                      tag: "plain_text",
+                      content: "切换"
+                    },
+                    type: "primary",
+                    value: {
+                      kind: "thread",
+                      action: "switch",
+                      local_thread_id: thread.id,
+                      command: `/switch ${thread.id}`
+                    }
+                  }
+                ]
+          }
+        ]
+      }
+    ];
+
+    if (index < threads.length - 1) {
+      rows.push({ tag: "hr" });
+    }
+    return rows;
+  });
+}
+
+function compareThreadsForDisplay(left: ThreadRecord, right: ThreadRecord): number {
+  const leftUpdatedAt = Number(left.metadata.updatedAt || 0);
+  const rightUpdatedAt = Number(right.metadata.updatedAt || 0);
+  if (leftUpdatedAt !== rightUpdatedAt) {
+    return rightUpdatedAt - leftUpdatedAt;
+  }
+
+  return right.updatedAt.localeCompare(left.updatedAt);
+}
+
+function formatThreadUpdatedAt(thread: ThreadRecord): string {
+  const updatedAt = Number(thread.metadata.updatedAt || 0);
+  if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
+    return "";
+  }
+
+  return ` · updatedAt: \`${new Date(updatedAt).toISOString()}\``;
+}
+
+function formatThreadPreview(thread: ThreadRecord): string {
+  const lines: string[] = [];
+  const userText =
+    typeof thread.metadata.lastUserText === "string"
+      ? thread.metadata.lastUserText.trim()
+      : "";
+  const agentText =
+    typeof thread.metadata.lastAgentText === "string"
+      ? thread.metadata.lastAgentText.trim()
+      : "";
+  const preview =
+    typeof thread.metadata.preview === "string" ? thread.metadata.preview.trim() : "";
+
+  if (userText) {
+    lines.push(`用户: ${sanitizeCardMarkdown(truncateThreadLine(userText, 56))}`);
+  }
+  if (agentText) {
+    lines.push(`Codex: ${sanitizeCardMarkdown(truncateThreadLine(agentText, 56))}`);
+  } else if (preview) {
+    lines.push(`摘要: ${sanitizeCardMarkdown(truncateThreadLine(preview, 72))}`);
+  }
+
+  return lines.join("\n");
+}
+
+function truncateThreadLine(text: string, maxLength: number): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength).trim()}...`;
+}
+
+function extractThreadSummary(response: {
+  thread?: {
+    turns?: Array<{
+      items?: Array<
+        | { type: "userMessage"; content?: Array<{ text?: string }> }
+        | { type: "agentMessage"; text?: string }
+      >;
+    }>;
+  };
+}): {
+  preview: string;
+  lastUserText: string;
+  lastAgentText: string;
+} {
+  const turns = response.thread?.turns || [];
+  let lastUserText = "";
+  let lastAgentText = "";
+
+  for (const turn of turns) {
+    for (const item of turn.items || []) {
+      if (item.type === "userMessage") {
+        const text = item.content?.map((entry) => entry.text || "").join("").trim();
+        if (text) {
+          lastUserText = text;
+        }
+      }
+      if (item.type === "agentMessage" && item.text?.trim()) {
+        lastAgentText = item.text.trim();
+      }
+    }
+  }
+
+  return {
+    preview: lastAgentText || lastUserText,
+    lastUserText,
+    lastAgentText
   };
 }
 
@@ -1515,9 +1821,23 @@ function buildWorkspaceListCard(
               buildCommandButtonColumn(
                 workspace.id === currentWorkspaceId ? "当前状态" : "进入",
                 `/workspace status ${workspace.slug}`,
-                "primary"
+                "primary",
+                {
+                  kind: "workspace",
+                  action: "status",
+                  workspace_slug: workspace.slug
+                }
               ),
-              buildCommandButtonColumn("移除", `/workspace remove ${workspace.slug}`)
+              buildCommandButtonColumn(
+                "移除",
+                `/workspace remove ${workspace.slug}`,
+                undefined,
+                {
+                  kind: "workspace",
+                  action: "remove",
+                  workspace_slug: workspace.slug
+                }
+              )
             ]
           }
         ];
@@ -1529,7 +1849,8 @@ function buildWorkspaceListCard(
 function buildCommandButtonColumn(
   label: string,
   command: string,
-  type?: "default" | "primary" | "danger"
+  type?: "default" | "primary" | "danger",
+  extraValue?: Record<string, unknown>
 ): Record<string, unknown> {
   return {
     tag: "column",
@@ -1545,7 +1866,8 @@ function buildCommandButtonColumn(
         ...(type ? { type } : {}),
         value: {
           kind: "callback",
-          command
+          command,
+          ...(extraValue ?? {})
         }
       }
     ]

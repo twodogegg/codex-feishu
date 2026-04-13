@@ -15,7 +15,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@larksuiteoapi/node-sdk": "^1.54.0",
+    "@larksuiteoapi/node-sdk": "1.59.0",
     "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.7",
     "zod": "^3.24.1"

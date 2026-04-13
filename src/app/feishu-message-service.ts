@@ -93,9 +93,7 @@ export class FeishuMessageService {
           }
         : undefined;
     const actionValue = action?.value ?? {};
-    const command = typeof action?.value?.command === "string"
-      ? action.value.command.trim()
-      : "";
+    const command = resolveCardActionCommand(actionValue);
     const actionChatId = pickString(actionValue.chat_id, actionValue.chatId);
     const effectiveContext = context ?? (
       event.open_message_id
@@ -162,6 +160,66 @@ export class FeishuMessageService {
       }
     }
   }
+}
+
+function resolveCardActionCommand(actionValue: Record<string, unknown>): string {
+  const directCommand = pickString(actionValue.command);
+  if (directCommand) {
+    return directCommand;
+  }
+
+  const kind = pickString(actionValue.kind)?.toLowerCase();
+  const action = pickString(actionValue.action)?.toLowerCase();
+  if (!kind || !action) {
+    return "";
+  }
+
+  if (kind === "panel") {
+    if (action === "new_thread") {
+      return "/new";
+    }
+    if (action === "status") {
+      return "/status";
+    }
+    if (action === "show_messages") {
+      return "/message";
+    }
+    if (action === "stop") {
+      return "/stop";
+    }
+  }
+
+  if (kind === "thread") {
+    const threadId = pickString(
+      actionValue.local_thread_id,
+      actionValue.localThreadId,
+      actionValue.thread_id,
+      actionValue.threadId
+    );
+    if (action === "switch" && threadId) {
+      return `/switch ${threadId}`;
+    }
+    if (action === "messages") {
+      return "/message";
+    }
+  }
+
+  if (kind === "workspace") {
+    const selector = pickString(
+      actionValue.workspace_slug,
+      actionValue.workspaceSlug,
+      actionValue.workspace_id,
+      actionValue.workspaceId
+    );
+    if ((action === "status" || action === "bind") && selector) {
+      return `/workspace status ${selector}`;
+    }
+    if (action === "remove" && selector) {
+      return `/workspace remove ${selector}`;
+    }
+  }
+
+  return "";
 }
 
 const EVENT_DEDUP_TTL_MS = 5 * 60 * 1000;

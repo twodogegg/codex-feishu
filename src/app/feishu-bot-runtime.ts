@@ -49,10 +49,14 @@ export class FeishuBotRuntime {
         PingTimeout: 5
       }
     });
+    patchWsClientForCardCallbacks(wsClient as {
+      handleEventData?: (data: unknown) => unknown;
+    });
 
     const feishuClient = new FeishuClient(client as never);
     const eventDispatcher = new lark.EventDispatcher({}).register({
       "im.message.receive_v1": async (data) => {
+        console.log("[codex-feishu] received im.message.receive_v1");
         let streamMessageId: string | undefined;
         const dispatch = await this.container.feishu.handleTextEvent(data as never, {
           onConversationUpdate: async (replyContext, update) => {
@@ -102,7 +106,7 @@ export class FeishuBotRuntime {
             }`
           );
         });
-        return buildCardCallbackResponse("正在处理...");
+        return buildCardCallbackResponse("处理中...");
       }
     });
 
@@ -114,8 +118,10 @@ export class FeishuBotRuntime {
     feishuClient: FeishuClient,
     data: unknown
   ): Promise<void> {
+    console.log("[codex-feishu] received card.action.trigger");
     const dispatch = await this.container.feishu.handleCardAction(data as never);
     if (!dispatch) {
+      console.warn("[codex-feishu] card action ignored: missing command/context");
       return;
     }
 
@@ -224,13 +230,43 @@ function buildAssistantActionColumns(
   const actions =
     state === "starting" || state === "streaming"
       ? [
-          { label: "停止", command: "/stop", type: "danger" as const },
-          { label: "状态", command: "/where", type: "default" as const }
+          {
+            label: "停止",
+            command: "/stop",
+            type: "danger" as const,
+            kind: "panel",
+            action: "stop"
+          },
+          {
+            label: "状态",
+            command: "/status",
+            type: "default" as const,
+            kind: "panel",
+            action: "status"
+          }
         ]
       : [
-          { label: "新线程", command: "/new", type: "primary" as const },
-          { label: "状态", command: "/where", type: "default" as const },
-          { label: "最近消息", command: "/message", type: "default" as const }
+          {
+            label: "新线程",
+            command: "/new",
+            type: "primary" as const,
+            kind: "panel",
+            action: "new_thread"
+          },
+          {
+            label: "状态",
+            command: "/status",
+            type: "default" as const,
+            kind: "panel",
+            action: "status"
+          },
+          {
+            label: "最近消息",
+            command: "/message",
+            type: "default" as const,
+            kind: "panel",
+            action: "show_messages"
+          }
         ];
 
   return actions.map((action) => ({
@@ -247,6 +283,8 @@ function buildAssistantActionColumns(
         ...(action.type !== "default" ? { type: action.type } : {}),
         value: {
           ...sharedValue,
+          kind: action.kind,
+          action: action.action,
           command: action.command
         }
       }
@@ -276,6 +314,39 @@ function resolveAssistantCardTemplate(state: ConversationUpdate["state"]): strin
 
 function sanitizeCardMarkdown(text: string): string {
   return String(text || "").replace(/\r\n/g, "\n").trim();
+}
+
+export function patchWsClientForCardCallbacks(wsClient: {
+  handleEventData?: (data: unknown) => unknown;
+}): void {
+  if (!wsClient || typeof wsClient.handleEventData !== "function") {
+    return;
+  }
+
+  const originalHandleEventData = wsClient.handleEventData.bind(wsClient);
+  wsClient.handleEventData = (data: unknown) => {
+    if (!data || typeof data !== "object") {
+      return originalHandleEventData(data);
+    }
+
+    const frame = data as {
+      headers?: Array<{ key?: string; value?: string }>;
+    };
+    const headers = Array.isArray(frame.headers) ? frame.headers : [];
+    const messageType = headers.find((header) => header?.key === "type")?.value;
+    if (messageType !== "card") {
+      return originalHandleEventData(data);
+    }
+
+    console.log("[codex-feishu] patch ws frame type card -> event");
+
+    return originalHandleEventData({
+      ...frame,
+      headers: headers.map((header) =>
+        header?.key === "type" ? { ...header, value: "event" } : header
+      )
+    });
+  };
 }
 
 function buildCardCallbackResponse(toast: string): Record<string, unknown> {

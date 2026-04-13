@@ -116,7 +116,10 @@ function readUserCodexTemplate(): UserCodexTemplate {
   }
 
   const raw = fs.readFileSync(configPath, "utf8");
-  const modelProvider = normalizeTomlStringScalar(extractScalar(raw, "model_provider"));
+  const inferredModelProvider = inferModelProvider(raw);
+  const modelProvider =
+    normalizeTomlStringScalar(extractScalar(raw, "model_provider")) ??
+    inferredModelProvider;
   return {
     modelProvider,
     approvalsReviewer: normalizeTomlStringScalar(
@@ -135,6 +138,17 @@ function readUserCodexTemplate(): UserCodexTemplate {
       ? extractNamedBlock(raw, `[model_providers.${stripTomlString(modelProvider)}]`)
       : undefined
   };
+}
+
+function inferModelProvider(source: string): string | undefined {
+  const blockHeaders = source.match(/^\[model_providers\.([^\]]+)\]$/gm) || [];
+  if (blockHeaders.length === 0) {
+    return undefined;
+  }
+
+  const firstHeader = blockHeaders[0] ?? "";
+  const match = firstHeader.match(/^\[model_providers\.([^\]]+)\]$/);
+  return match?.[1]?.trim();
 }
 
 function extractScalar(source: string, key: string): string | undefined {
