@@ -16,10 +16,10 @@ const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
     aliases: []
   },
   {
-    name: "where",
+    name: "sessions",
     category: "workspace",
-    summary: "查看当前会话绑定的 workspace 与线程状态。",
-    usage: ["/where"],
+    summary: "查看当前会话绑定的 workspace 与会话列表。",
+    usage: ["/sessions", "/sessions <page>"],
     aliases: []
   },
   {

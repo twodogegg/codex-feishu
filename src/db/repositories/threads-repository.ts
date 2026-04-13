@@ -215,6 +215,61 @@ export class ThreadsRepository {
 
     return this.getById(threadId);
   }
+
+  deleteMainThreadsNotInCodexIds(
+    workspaceId: string,
+    codexThreadIds: string[],
+    preserveThreadId?: string | null
+  ): void {
+    const normalizedIds = codexThreadIds
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+
+    if (normalizedIds.length === 0) {
+      const statement = preserveThreadId
+        ? this.db.prepare(`
+            DELETE FROM threads
+            WHERE workspace_id = ?
+              AND kind = 'main'
+              AND id != ?
+          `)
+        : this.db.prepare(`
+            DELETE FROM threads
+            WHERE workspace_id = ?
+              AND kind = 'main'
+          `);
+      if (preserveThreadId) {
+        statement.run(workspaceId, preserveThreadId);
+      } else {
+        statement.run(workspaceId);
+      }
+      return;
+    }
+
+    const placeholders = normalizedIds.map(() => "?").join(", ");
+    const sql = preserveThreadId
+      ? `
+          DELETE FROM threads
+          WHERE workspace_id = ?
+            AND kind = 'main'
+            AND id != ?
+            AND codex_thread_id NOT IN (${placeholders})
+        `
+      : `
+          DELETE FROM threads
+          WHERE workspace_id = ?
+            AND kind = 'main'
+            AND codex_thread_id NOT IN (${placeholders})
+        `;
+
+    const statement = this.db.prepare(sql);
+    if (preserveThreadId) {
+      statement.run(workspaceId, preserveThreadId, ...normalizedIds);
+      return;
+    }
+
+    statement.run(workspaceId, ...normalizedIds);
+  }
 }
 
 function mapThreadRow(row: ThreadRow): ThreadRecord {

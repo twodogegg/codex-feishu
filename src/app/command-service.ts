@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { createCommandRouter, parseUserInput } from "../domain/commanding/index.js";
 import { listCommandDefinitions } from "../commands/index.js";
 import { syncWorkspaceCodexConfig } from "../codex/workspace-config.js";
+import type { CodexThreadSummary, CodexThreadTokenUsage } from "../codex/app-server-client.js";
 import type { DatabaseContext } from "../db/index.js";
 import type { ThreadRecord, WorkspaceRecord } from "../types/db.js";
 import type {
@@ -17,7 +18,6 @@ import type {
   CodexLastRunStats,
   CodexWorkspaceWorker
 } from "../workers/codex/codex-worker.js";
-import type { CodexThreadTokenUsage } from "../codex/app-server-client.js";
 
 export type SessionActor = {
   openId: string;
@@ -174,7 +174,7 @@ function createHandlers(): CommandHandlerMap<HandlerContext, CommandResponse> {
   return {
     help: (_input, context) => handleHelpCommand(context),
     bind: (input, context) => handleBindCommand(input.argText, context),
-    where: (_input, context) => handleWhereCommand(context),
+    sessions: (input, context) => handleSessionsCommand(input.argText, context),
     workspace: (input, context) => handleWorkspaceCommand(input.argText, context),
     remove: (input, context) => handleRemoveCommand(input.argText, context),
     send: (input, context) => handleSendCommand(input.argText, context),
@@ -234,7 +234,10 @@ async function handleBindCommand(
   );
 }
 
-async function handleWhereCommand(context: HandlerContext): Promise<CommandResponse> {
+async function handleSessionsCommand(
+  argText: string,
+  context: HandlerContext
+): Promise<CommandResponse> {
   const state = getCurrentBindingState(context);
   if (!state.binding || !state.workspace) {
     return messageResponse(
@@ -250,8 +253,13 @@ async function handleWhereCommand(context: HandlerContext): Promise<CommandRespo
 
   return {
     kind: "card",
-    title: "当前状态",
-    card: buildStatusCard(nextState.workspace!, nextState.thread, context)
+    title: "当前 Sessions",
+    card: buildStatusCard(
+      nextState.workspace!,
+      nextState.thread,
+      context,
+      parseSessionsPage(argText)
+    )
   };
 }
 
@@ -321,8 +329,8 @@ async function handleWorkspaceStatusCommand(
 
   return {
     kind: "card",
-    title: "当前状态",
-    card: buildStatusCard(nextState.workspace!, nextState.thread, context)
+    title: "当前 Sessions",
+    card: buildStatusCard(nextState.workspace!, nextState.thread, context, 1)
   };
 }
 
@@ -966,9 +974,10 @@ async function handleConversationInput(
   await worker.ensureReady();
   await syncWorkspaceThreads(context, state.workspace, worker);
 
-  const activeThread = state.thread ?? (await ensureWorkspaceThread(context, state.workspace));
-  const model = state.workspace.defaultModel;
-  const effort = state.workspace.defaultEffort;
+  const workspace = state.workspace;
+  const activeThread = state.thread ?? (await ensureWorkspaceThread(context, workspace));
+  const model = workspace.defaultModel;
+  const effort = workspace.defaultEffort;
   let lastStreamEmitAt = 0;
   let latestText = "";
   let sawStreamEvent = false;
@@ -984,14 +993,14 @@ async function handleConversationInput(
       lastTurnId: runResult.turnId,
       isActive: true
     });
-    context.db.workspaces.setLastActiveThreadId(state.workspace.id, activeThread.id);
+    context.db.workspaces.setLastActiveThreadId(workspace.id, activeThread.id);
     if (state.binding) {
       context.db.sessionBindings.upsert({
         id: state.binding.id,
         userId: state.binding.userId,
         chatId: state.binding.chatId,
         threadKey: state.binding.threadKey,
-        workspaceId: state.workspace.id,
+        workspaceId: workspace.id,
         activeThreadId: activeThread.id
       });
     }
@@ -1021,7 +1030,7 @@ async function handleConversationInput(
         isActive: false
       });
 
-      const recreatedThread = await ensureWorkspaceThread(context, state.workspace);
+      const recreatedThread = await ensureWorkspaceThread(context, workspace);
       const retriedResult = await runConversationTurn(recreatedThread);
 
       context.db.threads.updateThread(recreatedThread.id, {
@@ -1029,14 +1038,14 @@ async function handleConversationInput(
         lastTurnId: retriedResult.turnId,
         isActive: true
       });
-      context.db.workspaces.setLastActiveThreadId(state.workspace.id, recreatedThread.id);
+      context.db.workspaces.setLastActiveThreadId(workspace.id, recreatedThread.id);
       if (state.binding) {
         context.db.sessionBindings.upsert({
           id: state.binding.id,
           userId: state.binding.userId,
           chatId: state.binding.chatId,
           threadKey: state.binding.threadKey,
-          workspaceId: state.workspace.id,
+          workspaceId: workspace.id,
           activeThreadId: recreatedThread.id
         });
       }
@@ -1415,7 +1424,18 @@ async function syncWorkspaceThreads(
   workspace: WorkspaceRecord,
   worker: CodexWorkspaceWorker
 ): Promise<void> {
-  const remoteThreads = await worker.listThreads();
+  const remoteThreads = (await worker.listThreads()).filter((thread) =>
+    pathMatchesWorkspaceRoot(thread.cwd, workspace.rootPath)
+  );
+  const visibleCodexThreadIds = remoteThreads.map((thread) => thread.id);
+  if (visibleCodexThreadIds.length > 0) {
+    context.db.threads.deleteMainThreadsNotInCodexIds(
+      workspace.id,
+      visibleCodexThreadIds,
+      workspace.lastActiveThreadId
+    );
+  }
+
   for (const remoteThread of remoteThreads) {
     const existing = context.db.threads.getByCodexThreadId(remoteThread.id);
     context.db.threads.upsert({
@@ -1436,6 +1456,38 @@ async function syncWorkspaceThreads(
         existing?.id === workspace.lastActiveThreadId
     });
   }
+}
+
+function pathMatchesWorkspaceRoot(candidatePath: string, workspaceRoot: string): boolean {
+  const normalizedCandidate = normalizeWorkspacePath(candidatePath);
+  const normalizedWorkspaceRoot = normalizeWorkspacePath(workspaceRoot);
+  if (!normalizedCandidate || !normalizedWorkspaceRoot) {
+    return false;
+  }
+
+  const compareCandidate = normalizeComparableWorkspacePath(normalizedCandidate);
+  const compareWorkspaceRoot = normalizeComparableWorkspacePath(normalizedWorkspaceRoot);
+  if (compareCandidate === compareWorkspaceRoot) {
+    return true;
+  }
+
+  return compareCandidate.startsWith(`${compareWorkspaceRoot}/`);
+}
+
+function normalizeWorkspacePath(value: string): string {
+  const normalized = String(value || "").trim().replace(/\\/g, "/");
+  if (!normalized) {
+    return "";
+  }
+
+  const normalizedDrivePrefix = /^\/[A-Za-z]:\//.test(normalized)
+    ? normalized.slice(1)
+    : normalized;
+  return normalizedDrivePrefix.replace(/\/+$/g, "");
+}
+
+function normalizeComparableWorkspacePath(pathValue: string): string {
+  return /^[A-Za-z]:\//.test(pathValue) ? pathValue.toLowerCase() : pathValue;
 }
 
 async function ensureWorkspaceThread(
@@ -1617,13 +1669,18 @@ function messageResponse(title: string, body: string): CommandResponse {
 function buildStatusCard(
   workspace: WorkspaceRecord,
   thread: ThreadRecord | null,
-  context: HandlerContext
+  context: HandlerContext,
+  page: number
 ): Record<string, unknown> {
-  const recentThreads = context.db.threads
+  const allThreads = context.db.threads
     .listByWorkspaceId(workspace.id)
     .filter((candidate) => candidate.kind === "main")
-    .sort(compareThreadsForDisplay)
-    .slice(0, 6);
+    .sort(compareThreadsForDisplay);
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(allThreads.length / pageSize));
+  const safePage = Math.min(Math.max(page, 1), totalPages);
+  const pageStart = (safePage - 1) * pageSize;
+  const recentThreads = allThreads.slice(pageStart, pageStart + pageSize);
 
   return {
     schema: "2.0",
@@ -1654,7 +1711,7 @@ function buildStatusCard(
               kind: "panel",
               action: "new_thread"
             }),
-            buildCommandButtonColumn("刷新", "/where", undefined, {
+            buildCommandButtonColumn("刷新", "/sessions", undefined, {
               kind: "panel",
               action: "status"
             }),
@@ -1673,12 +1730,53 @@ function buildStatusCard(
         },
         {
           tag: "markdown",
-          content: `**线程列表**（${recentThreads.length}）`
+          content: `**会话列表**（第 ${safePage}/${totalPages} 页，共 ${allThreads.length} 条）`
         },
-        ...buildThreadRows(recentThreads, thread)
+        ...buildThreadRows(recentThreads, thread),
+        {
+          tag: "hr"
+        },
+        {
+          tag: "column_set",
+          flex_mode: "none",
+          columns: [
+            buildCommandButtonColumn(
+              "上一页",
+              `/sessions ${Math.max(1, safePage - 1)}`,
+              undefined,
+              {
+                kind: "panel",
+                action: "sessions_prev"
+              }
+            ),
+            buildCommandButtonColumn(
+              "下一页",
+              `/sessions ${Math.min(totalPages, safePage + 1)}`,
+              undefined,
+              {
+                kind: "panel",
+                action: "sessions_next"
+              }
+            )
+          ]
+        }
       ]
     }
   };
+}
+
+function parseSessionsPage(argText: string): number {
+  const raw = argText.trim();
+  if (!raw) {
+    return 1;
+  }
+
+  const value = Number.parseInt(raw, 10);
+  if (!Number.isFinite(value) || value < 1) {
+    return 1;
+  }
+
+  return value;
 }
 
 function buildThreadRows(

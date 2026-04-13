@@ -75,7 +75,8 @@ function createFixture(options?: {
     remoteThreads: options?.remoteThreads ?? [],
     workerState: "ready",
     closed: false,
-    runTurnFailureConsumed: false
+    runTurnFailureConsumed: false,
+    runTurnCalls: [] as Array<{ threadId: string; cwd?: string; text: string }>
   };
 
   const worker = {
@@ -103,7 +104,8 @@ function createFixture(options?: {
       };
     },
     async listThreads() {
-      return state.remoteThreads.map((thread) => ({
+      const source = options?.remoteThreads || state.remoteThreads;
+      return source.map((thread) => ({
         cwd: worker.workspaceRoot,
         updatedAt: Date.now(),
         codexPath: null,
@@ -151,6 +153,10 @@ function createFixture(options?: {
         onDelta?: (payload: { turnId: string; delta: string; text: string }) => void;
       }
     ) {
+      state.runTurnCalls.push({
+        threadId,
+        text: _text
+      });
       if (
         options?.failRunTurnWithThreadNotFoundOnce &&
         !state.runTurnFailureConsumed
@@ -230,6 +236,7 @@ function createFixture(options?: {
     db,
     workers,
     worker,
+    state,
     service,
     session,
     cleanup() {
@@ -718,6 +725,63 @@ test("普通文本完成后会输出 token、上下文余量和生成用时", as
   }
 });
 
+test("只会同步属于当前 workspace 的线程到当前视图", async () => {
+  const fixture = createFixture();
+
+  try {
+    const { workspace } = await bindDefaultWorkspace(fixture);
+    fixture.db.threads.upsert({
+      id: "thread-stale-other",
+      workspaceId: workspace.id,
+      codexThreadId: "codex-stale-other",
+      name: "Stale Other Thread",
+      kind: "main",
+      status: "completed",
+      metadata: {
+        cwd: "/tmp/another-repo",
+        preview: "stale"
+      }
+    });
+    fixture.state.remoteThreads = [
+      {
+        id: "codex-workspace-1",
+        name: "Workspace Thread",
+        preview: "from workspace",
+        status: "completed",
+        cwd: workspace.rootPath,
+        updatedAt: 200
+      },
+      {
+        id: "codex-other-1",
+        name: "Other Thread",
+        preview: "from other repo",
+        status: "completed",
+        cwd: "/tmp/another-repo",
+        updatedAt: 300
+      }
+    ];
+
+    const result = await fixture.service.executeText("/sessions", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "sessions");
+      assert.equal(result.result.kind, "card");
+      assert.match(JSON.stringify(result.result.card), /Workspace Thread/);
+      assert.doesNotMatch(JSON.stringify(result.result.card), /Other Thread/);
+    }
+
+    const importedWorkspaceThread = fixture.db.threads.getByCodexThreadId("codex-workspace-1");
+    const importedOtherThread = fixture.db.threads.getByCodexThreadId("codex-other-1");
+    const staleOtherThread = fixture.db.threads.getByCodexThreadId("codex-stale-other");
+    assert.ok(importedWorkspaceThread);
+    assert.equal(importedOtherThread, null);
+    assert.equal(staleOtherThread, null);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("/workspace status <slug> 会切换到目标 workspace 并返回状态卡", async () => {
   const fixture = createFixture();
 
@@ -817,6 +881,9 @@ test("重启后会保留 session 绑定和 active thread", async () => {
       async listThreads() {
         return [];
       },
+      async listThreadsForCwd() {
+        return [];
+      },
       async startThread() {
         return {
           id: "thread_new",
@@ -900,11 +967,11 @@ test("重启后会保留 session 绑定和 active thread", async () => {
     first.close();
 
     const second = createFixtureFromDir();
-    const whereResult = await second.service.executeText("/where", second.session);
+    const whereResult = await second.service.executeText("/sessions", second.session);
 
     assert.equal(whereResult.kind, "handled");
     if (whereResult.kind === "handled") {
-      assert.equal(whereResult.commandName, "where");
+      assert.equal(whereResult.commandName, "sessions");
       assert.equal(whereResult.result.kind, "card");
       assert.match(JSON.stringify(whereResult.result.card), new RegExp(activeThreadId));
     }
@@ -915,7 +982,7 @@ test("重启后会保留 session 绑定和 active thread", async () => {
   }
 });
 
-test("/where 状态卡会展示最近线程并提供切换按钮", async () => {
+test("/sessions 状态卡会展示最近线程并提供切换按钮", async () => {
   const fixture = createFixture({
     remoteThreads: [
       {
@@ -956,17 +1023,59 @@ test("/where 状态卡会展示最近线程并提供切换按钮", async () => {
     fixture.db.workspaces.setLastActiveThreadId(binding.workspaceId!, activeRemote.id);
     fixture.db.threads.setActiveThread(binding.workspaceId!, activeRemote.id);
 
-    const result = await fixture.service.executeText("/where", fixture.session);
+    const result = await fixture.service.executeText("/sessions", fixture.session);
 
     assert.equal(result.kind, "handled");
     if (result.kind === "handled") {
+      assert.equal(result.commandName, "sessions");
       assert.equal(result.result.kind, "card");
       const cardJson = JSON.stringify(result.result.card);
-      assert.match(cardJson, /线程列表/);
+      assert.match(cardJson, /会话列表/);
       assert.match(cardJson, /第二条对话/);
       assert.match(cardJson, /第一条对话/);
       assert.match(cardJson, /workspace 卡片交互/);
       assert.match(cardJson, /\/switch/);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("/where 不再兼容，会返回未知命令", async () => {
+  const fixture = createFixture();
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    const result = await fixture.service.executeText("/where", fixture.session);
+
+    assert.equal(result.kind, "unknown-command");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("/sessions 2 会返回第二页线程列表", async () => {
+  const fixture = createFixture({
+    remoteThreads: Array.from({ length: 12 }, (_, index) => ({
+      id: `codex-thread-${index + 1}`,
+      name: `线程 ${index + 1}`,
+      preview: `预览 ${index + 1}`,
+      status: "created",
+      updatedAt: 1200 - index
+    }))
+  });
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    const result = await fixture.service.executeText("/sessions 2", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled" && result.result.kind === "card") {
+      const cardJson = JSON.stringify(result.result.card);
+      assert.match(cardJson, /第 2\/2 页，共 12 条/);
+      assert.match(cardJson, /线程 11/);
+      assert.match(cardJson, /线程 12/);
+      assert.doesNotMatch(cardJson, /线程 1(?!\d)/);
     }
   } finally {
     fixture.cleanup();

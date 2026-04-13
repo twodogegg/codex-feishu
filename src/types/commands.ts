@@ -1,7 +1,7 @@
 export const SUPPORTED_COMMAND_NAMES = [
   "help",
   "bind",
-  "where",
+  "sessions",
   "workspace",
   "remove",
   "send",
