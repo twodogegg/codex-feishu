@@ -16,7 +16,10 @@ const DEFAULT_OPTIONS: Required<Pick<FeishuNormalizationOptions, "requireBotMent
 
 const LEADING_AT_TAG_PATTERN =
   /^(\s*<at\b[^>]*>.*?<\/at>\s*)+/isu;
+const LEADING_PLAIN_AT_PATTERN = /^(\s*@[^\s/@]+\s*)+/u;
+const LEADING_TRIM_PATTERN = /^[\s\u200B\u200C\u200D\u2060\uFEFF]+/u;
 const AT_TAG_PATTERN = /<at\b(?<attrs>[^>]*)>(?<label>.*?)<\/at>/giu;
+const COMMAND_PREFIX_PATTERN = /^[\p{P}\p{Z}\p{Cf}]+$/u;
 
 export function normalizeFeishuTextEvent(
   event: FeishuTextMessageEvent,
@@ -33,7 +36,12 @@ export function normalizeFeishuTextEvent(
   const rawText = extractTextFromMessageContent(message.content);
   const text = normalizeIncomingText(rawText);
   const leadingMentionSlice = extractLeadingMentionSlice(text);
-  const textWithoutLeadingMentions = stripLeadingMentions(text);
+  const textWithoutLeadingMentions = normalizePostMentionText(
+    stripLeadingMentions(text)
+  );
+  const normalizedCommandCandidate = normalizeCommandCandidate(
+    textWithoutLeadingMentions
+  );
   const messageMentions = collectMessageMentions(event);
   const mentionsBot = detectBotMention(
     messageMentions,
@@ -46,7 +54,7 @@ export function normalizeFeishuTextEvent(
     !mergedOptions.requireBotMentionInGroup ||
     mentionsBot;
   const input =
-    parseCommandText(textWithoutLeadingMentions) ??
+    parseCommandText(normalizedCommandCandidate) ??
     createPlainTextInput(rawText, textWithoutLeadingMentions);
   const sender = senderPayload.sender_id;
 
@@ -124,12 +132,52 @@ function normalizeIncomingText(text: string): string {
 }
 
 function stripLeadingMentions(text: string): string {
-  return text.replace(LEADING_AT_TAG_PATTERN, "").trim();
+  return text
+    .replace(LEADING_AT_TAG_PATTERN, "")
+    .replace(LEADING_PLAIN_AT_PATTERN, "")
+    .trim();
 }
 
 function extractLeadingMentionSlice(text: string): string {
   const match = text.match(LEADING_AT_TAG_PATTERN);
-  return match?.[0] ?? "";
+  if (match?.[0]) {
+    return match[0];
+  }
+
+  const plainMatch = text.match(LEADING_PLAIN_AT_PATTERN);
+  return plainMatch?.[0] ?? "";
+}
+
+function normalizePostMentionText(text: string): string {
+  return text.replace(LEADING_TRIM_PATTERN, "").trim();
+}
+
+function normalizeCommandCandidate(text: string): string {
+  const normalized = normalizePostMentionText(text);
+  if (normalized.startsWith("/")) {
+    return normalized;
+  }
+
+  if (normalized.startsWith("／")) {
+    return `/${normalized.slice(1)}`;
+  }
+
+  const slashIndex = normalized.search(/[\/／]/u);
+  if (slashIndex <= 0) {
+    return normalized;
+  }
+
+  const prefix = normalized.slice(0, slashIndex).trim();
+  if (!prefix || !COMMAND_PREFIX_PATTERN.test(prefix)) {
+    return normalized;
+  }
+
+  const commandText = normalized.slice(slashIndex);
+  if (commandText.startsWith("／")) {
+    return `/${commandText.slice(1)}`;
+  }
+
+  return commandText;
 }
 
 function collectMessageMentions(event: FeishuTextMessageEvent): FeishuMention[] {
@@ -199,6 +247,15 @@ function mentionTargetsBot(
   mention: FeishuMention,
   options: FeishuNormalizationOptions
 ): boolean {
+  if (mention.key) {
+    if (options.botOpenId && mention.key === options.botOpenId) {
+      return true;
+    }
+    if (options.botUserId && mention.key === options.botUserId) {
+      return true;
+    }
+  }
+
   if (mention.id?.open_id && options.botOpenId === mention.id.open_id) {
     return true;
   }

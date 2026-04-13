@@ -159,3 +159,152 @@ test("会保留飞书话题上下文", () => {
   assert.equal(result.context.parentMessageId, "om_parent");
   assert.equal(result.context.threadId, "omt_topic");
 });
+
+test("群聊纯文本 @ 机器人后也能识别 /bind 命令", () => {
+  const result = normalizeFeishuTextEvent(
+    {
+      event: {
+        sender: {
+          sender_id: {
+            open_id: "ou_user"
+          }
+        },
+        message: {
+          message_id: "om_2",
+          chat_id: "oc_1",
+          chat_type: "group",
+          content: JSON.stringify({
+            text: "@狗蛋 /bind /Users/goudan/agents/自媒体"
+          }),
+          mentions: [
+            {
+              id: {
+                open_id: "ou_bot"
+              },
+              name: "狗蛋"
+            }
+          ]
+        }
+      }
+    },
+    {
+      botOpenId: "ou_bot",
+      requireBotMentionInGroup: true
+    }
+  );
+
+  assert.equal(result.context.mention.shouldHandle, true);
+  assert.equal(result.text, "/bind /Users/goudan/agents/自媒体");
+  assert.equal(result.input.kind, "command");
+});
+
+test("群聊 @ 标签后的零宽字符不会破坏命令解析", () => {
+  const result = normalizeFeishuTextEvent(
+    {
+      event: {
+        sender: {
+          sender_id: {
+            open_id: "ou_user"
+          }
+        },
+        message: {
+          message_id: "om_3",
+          chat_id: "oc_1",
+          chat_type: "group",
+          content: JSON.stringify({
+            text: '<at user_id="ou_bot">狗蛋</at>\u200b /bind default'
+          }),
+          mentions: [
+            {
+              id: {
+                open_id: "ou_bot"
+              },
+              name: "狗蛋"
+            }
+          ]
+        }
+      }
+    },
+    {
+      botOpenId: "ou_bot",
+      requireBotMentionInGroup: true
+    }
+  );
+
+  assert.equal(result.context.mention.shouldHandle, true);
+  assert.equal(result.text, "/bind default");
+  assert.equal(result.input.kind, "command");
+});
+
+test("群聊 @ 后接标点再写命令也会被识别", () => {
+  const result = normalizeFeishuTextEvent(
+    {
+      event: {
+        sender: {
+          sender_id: {
+            open_id: "ou_user"
+          }
+        },
+        message: {
+          message_id: "om_4",
+          chat_id: "oc_1",
+          chat_type: "group",
+          content: JSON.stringify({
+            text: "@狗蛋： /bind default"
+          }),
+          mentions: [
+            {
+              id: {
+                open_id: "ou_bot"
+              },
+              name: "狗蛋"
+            }
+          ]
+        }
+      }
+    },
+    {
+      botOpenId: "ou_bot",
+      requireBotMentionInGroup: true
+    }
+  );
+
+  assert.equal(result.input.kind, "command");
+  assert.equal(result.text, "/bind default");
+});
+
+test("群聊全角斜杠命令会被归一化为可执行命令", () => {
+  const result = normalizeFeishuTextEvent(
+    {
+      event: {
+        sender: {
+          sender_id: {
+            open_id: "ou_user"
+          }
+        },
+        message: {
+          message_id: "om_5",
+          chat_id: "oc_1",
+          chat_type: "group",
+          content: JSON.stringify({
+            text: "@狗蛋 ／bind default"
+          }),
+          mentions: [
+            {
+              id: {
+                open_id: "ou_bot"
+              },
+              name: "狗蛋"
+            }
+          ]
+        }
+      }
+    },
+    {
+      botOpenId: "ou_bot",
+      requireBotMentionInGroup: true
+    }
+  );
+
+  assert.equal(result.input.kind, "command");
+});
