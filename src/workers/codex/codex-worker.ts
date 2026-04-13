@@ -2,6 +2,7 @@ import fs from "node:fs";
 
 import {
   CodexAppServerClient,
+  type CodexThreadTokenUsage,
   type CodexThreadSummary,
   type CodexTurnRunHooks,
   type CodexTurnRunResult
@@ -15,11 +16,19 @@ export type CodexWorkerState =
   | "stopping"
   | "error";
 
+export type CodexLastRunStats = {
+  threadId: string;
+  turnId: string;
+  tokenUsage?: CodexThreadTokenUsage;
+  elapsedMs: number;
+};
+
 export class CodexWorkspaceWorker {
   private readonly client: CodexAppServerClient;
   private state: CodexWorkerState = "starting";
   private readonly startedAt = new Date().toISOString();
   private ready = false;
+  private lastRunStats: CodexLastRunStats | null = null;
 
   constructor(
     readonly workspaceId: string,
@@ -35,6 +44,10 @@ export class CodexWorkspaceWorker {
 
   getStartedAt(): string {
     return this.startedAt;
+  }
+
+  getLastRunStats(): CodexLastRunStats | null {
+    return this.lastRunStats;
   }
 
   async ensureReady(): Promise<void> {
@@ -130,6 +143,12 @@ export class CodexWorkspaceWorker {
         text,
         options
       );
+      this.lastRunStats = {
+        threadId,
+        turnId: result.turnId,
+        ...(result.tokenUsage ? { tokenUsage: result.tokenUsage } : {}),
+        elapsedMs: result.elapsedMs
+      };
       this.state = "idle";
       return result;
     } catch (error) {

@@ -15,6 +15,7 @@ export function createApplicationRuntime(
 ): ApplicationRuntime {
   const container = createApplicationContainer(config);
   const botRuntime = new FeishuBotRuntime(container, config);
+  let keepAliveTimer: NodeJS.Timeout | null = null;
 
   return {
     async start() {
@@ -35,6 +36,13 @@ export function createApplicationRuntime(
       }
 
       await botRuntime.start();
+      if (!keepAliveTimer) {
+        // Keep the single-process bot alive even when the Feishu SDK does not
+        // retain an active event-loop handle after startup.
+        keepAliveTimer = setInterval(() => {
+          // no-op
+        }, 60_000);
+      }
     }
   };
 }

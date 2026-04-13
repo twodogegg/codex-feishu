@@ -23,6 +23,48 @@ function createFixture(options?: {
   remoteThreads?: FakeThreadSummary[];
   streamedTextChunks?: string[];
   failRunTurnWithThreadNotFoundOnce?: boolean;
+  runTurnResult?: {
+    tokenUsage?: {
+      total: {
+        totalTokens: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      };
+      last: {
+        totalTokens: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      };
+      modelContextWindow?: number | null;
+    };
+      elapsedMs?: number;
+    };
+  lastRunStats?: {
+    threadId: string;
+    turnId: string;
+    tokenUsage?: {
+      total: {
+        totalTokens: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      };
+      last: {
+        totalTokens: number;
+        inputTokens: number;
+        cachedInputTokens: number;
+        outputTokens: number;
+        reasoningOutputTokens: number;
+      };
+      modelContextWindow?: number | null;
+    };
+    elapsedMs: number;
+  };
 }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-feishu-test-"));
   const db = initializeDatabase({
@@ -42,6 +84,23 @@ function createFixture(options?: {
     async ensureReady() {},
     getState() {
       return state.workerState;
+    },
+    getLastRunStats() {
+      if (!options?.lastRunStats) {
+        return null;
+      }
+      return {
+        ...options.lastRunStats,
+        ...(options.lastRunStats.tokenUsage
+          ? {
+              tokenUsage: {
+                ...options.lastRunStats.tokenUsage,
+                modelContextWindow:
+                  options.lastRunStats.tokenUsage.modelContextWindow ?? null
+              }
+            }
+          : {})
+      };
     },
     async listThreads() {
       return state.remoteThreads.map((thread) => ({
@@ -114,7 +173,19 @@ function createFixture(options?: {
       }
       return {
         turnId,
-        text: text || "ok"
+        text: text || "ok",
+        ...(options?.runTurnResult?.tokenUsage
+          ? {
+              tokenUsage: {
+                ...options.runTurnResult.tokenUsage,
+                modelContextWindow:
+                  options.runTurnResult.tokenUsage.modelContextWindow ?? null
+              }
+            }
+          : {}),
+        ...(typeof options?.runTurnResult?.elapsedMs === "number"
+          ? { elapsedMs: options.runTurnResult.elapsedMs }
+          : {})
       };
     },
     close() {
@@ -477,6 +548,50 @@ test("/statusline 会返回状态卡展示项说明", async () => {
   }
 });
 
+test("/status 会返回最近一次生成的 token、上下文和耗时", async () => {
+  const fixture = createFixture({
+    lastRunStats: {
+      threadId: "codex-main-1",
+      turnId: "turn_1",
+      tokenUsage: {
+        total: {
+          totalTokens: 1200,
+          inputTokens: 700,
+          cachedInputTokens: 100,
+          outputTokens: 500,
+          reasoningOutputTokens: 80
+        },
+        last: {
+          totalTokens: 300,
+          inputTokens: 180,
+          cachedInputTokens: 20,
+          outputTokens: 120,
+          reasoningOutputTokens: 10
+        },
+        modelContextWindow: 4000
+      },
+      elapsedMs: 12345
+    }
+  });
+
+  try {
+    await bindDefaultWorkspace(fixture);
+
+    const result = await fixture.service.executeText("/status", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "status");
+      assert.equal(result.result.kind, "message");
+      assert.match(result.result.body, /tokens: `1200 total \/ 700 in \/ 500 out`/);
+      assert.match(result.result.body, /context: `1200 \/ 4000 used, 2800 left`/);
+      assert.match(result.result.body, /elapsed: `12\.3s`/);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("/help 会返回命令帮助", async () => {
   const fixture = createFixture();
 
@@ -530,6 +645,74 @@ test("普通文本在提供流式 hook 时会输出 streaming 更新", async () 
     assert.equal(updates[1]?.text, "你好");
     assert.equal(updates.at(-1)?.state, "completed");
     assert.equal(updates.at(-1)?.text, "你好，世界");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("普通文本完成后会输出 token、上下文余量和生成用时", async () => {
+  const fixture = createFixture({
+    streamedTextChunks: ["你好", "，世界"],
+    runTurnResult: {
+      tokenUsage: {
+        total: {
+          totalTokens: 1200,
+          inputTokens: 700,
+          cachedInputTokens: 100,
+          outputTokens: 500,
+          reasoningOutputTokens: 80
+        },
+        last: {
+          totalTokens: 300,
+          inputTokens: 180,
+          cachedInputTokens: 20,
+          outputTokens: 120,
+          reasoningOutputTokens: 10
+        },
+        modelContextWindow: 4000
+      },
+      elapsedMs: 12345
+    }
+  });
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    const updates: Array<Record<string, unknown>> = [];
+
+    const result = await fixture.service.executeText("你好", fixture.session, {
+      onConversationUpdate(update) {
+        updates.push(update as unknown as Record<string, unknown>);
+      }
+    });
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "message");
+      assert.equal(result.result.kind, "noop");
+    }
+
+    const completed = updates.at(-1);
+    assert.equal(completed?.state, "completed");
+    assert.deepEqual(completed?.tokenUsage, {
+      total: {
+        totalTokens: 1200,
+        inputTokens: 700,
+        cachedInputTokens: 100,
+        outputTokens: 500,
+        reasoningOutputTokens: 80
+      },
+      last: {
+        totalTokens: 300,
+        inputTokens: 180,
+        cachedInputTokens: 20,
+        outputTokens: 120,
+        reasoningOutputTokens: 10
+      },
+      modelContextWindow: 4000
+    });
+    assert.equal(completed?.contextTokensUsed, 1200);
+    assert.equal(completed?.contextTokensRemaining, 2800);
+    assert.equal(completed?.elapsedMs, 12345);
   } finally {
     fixture.cleanup();
   }

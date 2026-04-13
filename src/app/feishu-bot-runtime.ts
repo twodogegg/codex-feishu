@@ -149,7 +149,7 @@ export class FeishuBotRuntime {
   }
 }
 
-function buildAssistantReplyCard(
+export function buildAssistantReplyCard(
   replyContext: {
     threadId?: string;
     rootMessageId?: string;
@@ -231,7 +231,7 @@ function buildAssistantActionColumns(
     state === "starting" || state === "streaming"
       ? [
           {
-            label: "停止",
+            label: "中断当前回复",
             command: "/stop",
             type: "danger" as const,
             kind: "panel",

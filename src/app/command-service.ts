@@ -13,7 +13,11 @@ import type {
   ParsedUserInput
 } from "../types/commands.js";
 import { CodexWorkerManager } from "../workers/codex/worker-manager.js";
-import type { CodexWorkspaceWorker } from "../workers/codex/codex-worker.js";
+import type {
+  CodexLastRunStats,
+  CodexWorkspaceWorker
+} from "../workers/codex/codex-worker.js";
+import type { CodexThreadTokenUsage } from "../codex/app-server-client.js";
 
 export type SessionActor = {
   openId: string;
@@ -56,6 +60,10 @@ export type ConversationUpdate = {
   model?: string;
   effort?: string;
   errorText?: string;
+  tokenUsage?: CodexThreadTokenUsage;
+  contextTokensUsed?: number;
+  contextTokensRemaining?: number;
+  elapsedMs?: number;
 };
 
 export type CommandExecutionHooks = {
@@ -540,7 +548,7 @@ async function handleStopCommand(context: HandlerContext): Promise<CommandRespon
     return state;
   }
   if (!state.thread?.lastTurnId) {
-    return messageResponse("没有运行中的任务", "当前线程没有可停止的 turn。");
+    return messageResponse("没有运行中的任务", "当前线程没有可中断的 turn。");
   }
 
   const worker = ensureWorkspaceWorker(context, state.workspace);
@@ -549,7 +557,7 @@ async function handleStopCommand(context: HandlerContext): Promise<CommandRespon
     status: "failed"
   });
 
-  return messageResponse("已发送停止请求", `已中断 turn \`${state.thread.lastTurnId}\``);
+  return messageResponse("已发送中断请求", `已中断 turn \`${state.thread.lastTurnId}\``);
 }
 
 async function handleModelCommand(
@@ -630,13 +638,15 @@ async function handleStatusCommand(
   const worker = ensureWorkspaceWorker(context, state.workspace);
   await worker.ensureReady();
   const threadCount = (await worker.listThreads()).length;
+  const lastRunStats = worker.getLastRunStats();
   return messageResponse(
     "Session 状态",
     [
       buildWorkspaceStatusText(state.workspace, state.thread, context),
       "",
       `workerState: \`${worker.getState()}\``,
-      `threadCount: ${threadCount}`
+      `threadCount: ${threadCount}`,
+      ...buildLastRunStatusLines(lastRunStats)
     ].join("\n")
   );
 }
@@ -992,7 +1002,8 @@ async function handleConversationInput(
         text: runResult.text || latestText,
         turnId: runResult.turnId,
         model,
-        effort
+        effort,
+        ...buildUsageUpdateFields(runResult.tokenUsage, runResult.elapsedMs)
       });
       return {
         kind: "noop"
@@ -1036,7 +1047,8 @@ async function handleConversationInput(
           text: retriedResult.text || latestText,
           turnId: retriedResult.turnId,
           model,
-          effort
+          effort,
+          ...buildUsageUpdateFields(retriedResult.tokenUsage, retriedResult.elapsedMs)
         });
         return {
           kind: "noop"
@@ -1126,6 +1138,63 @@ function formatConversationFailure(error: unknown): string {
   }
 
   return message;
+}
+
+function buildUsageUpdateFields(
+  tokenUsage: CodexThreadTokenUsage | undefined,
+  elapsedMs: number | undefined
+): Pick<
+  ConversationUpdate,
+  "tokenUsage" | "contextTokensUsed" | "contextTokensRemaining" | "elapsedMs"
+> {
+  const contextTokensUsed = tokenUsage?.total.totalTokens;
+  const contextWindow = tokenUsage?.modelContextWindow;
+  const contextTokensRemaining =
+    typeof contextTokensUsed === "number" && typeof contextWindow === "number"
+      ? Math.max(contextWindow - contextTokensUsed, 0)
+      : undefined;
+
+  return {
+    ...(tokenUsage ? { tokenUsage } : {}),
+    ...(typeof contextTokensUsed === "number" ? { contextTokensUsed } : {}),
+    ...(typeof contextTokensRemaining === "number"
+      ? { contextTokensRemaining }
+      : {}),
+    ...(typeof elapsedMs === "number" ? { elapsedMs } : {})
+  };
+}
+
+function buildLastRunStatusLines(lastRunStats: CodexLastRunStats | null): string[] {
+  if (!lastRunStats) {
+    return ["lastRun: 暂无最近一次生成指标"];
+  }
+
+  const lines = [
+    `lastTurn: \`${lastRunStats.turnId}\``,
+    `elapsed: \`${formatElapsedSeconds(lastRunStats.elapsedMs)}\``
+  ];
+  const tokenUsage = lastRunStats.tokenUsage;
+  if (tokenUsage) {
+    lines.push(
+      `tokens: \`${tokenUsage.total.totalTokens} total / ${tokenUsage.total.inputTokens} in / ${tokenUsage.total.outputTokens} out\``
+    );
+
+    if (typeof tokenUsage.modelContextWindow === "number") {
+      const remaining = Math.max(
+        tokenUsage.modelContextWindow - tokenUsage.total.totalTokens,
+        0
+      );
+      lines.push(
+        `context: \`${tokenUsage.total.totalTokens} / ${tokenUsage.modelContextWindow} used, ${remaining} left\``
+      );
+    }
+  }
+
+  return lines;
+}
+
+function formatElapsedSeconds(elapsedMs: number): string {
+  return `${(elapsedMs / 1000).toFixed(1)}s`;
 }
 
 function ensureUser(

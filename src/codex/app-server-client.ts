@@ -29,6 +29,22 @@ export type CodexTurnRunResult = {
   turnId: string;
   text: string;
   status: string;
+  tokenUsage?: CodexThreadTokenUsage;
+  elapsedMs: number;
+};
+
+export type CodexTokenUsageBreakdown = {
+  totalTokens: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+};
+
+export type CodexThreadTokenUsage = {
+  total: CodexTokenUsageBreakdown;
+  last: CodexTokenUsageBreakdown;
+  modelContextWindow: number | null;
 };
 
 export type CodexTurnRunHooks = {
@@ -250,6 +266,7 @@ export class CodexAppServerClient {
       effort?: string;
     } & CodexTurnRunHooks
   ): Promise<CodexTurnRunResult> {
+    const startedAt = Date.now();
     const turnStart = (await this.sendRequest("turn/start", {
       threadId,
       cwd,
@@ -272,6 +289,7 @@ export class CodexAppServerClient {
 
     return new Promise<CodexTurnRunResult>((resolve, reject) => {
       let aggregatedText = "";
+      let latestTokenUsage: CodexThreadTokenUsage | undefined;
       const unsubscribe = this.onMessage((message) => {
         if (message.method === "item/agentMessage/delta") {
           const params = message.params as
@@ -289,6 +307,22 @@ export class CodexAppServerClient {
               text: aggregatedText
             });
           }
+          return;
+        }
+
+        if (message.method === "thread/tokenUsage/updated") {
+          const params = message.params as
+            | {
+                threadId: string;
+                turnId: string;
+                tokenUsage: CodexThreadTokenUsage;
+              }
+            | undefined;
+          if (params?.threadId !== threadId || params.turnId !== turnId) {
+            return;
+          }
+
+          latestTokenUsage = params.tokenUsage;
           return;
         }
 
@@ -318,7 +352,9 @@ export class CodexAppServerClient {
           resolve({
             turnId,
             text: aggregatedText.trim(),
-            status: params.turn.status
+            status: params.turn.status,
+            ...(latestTokenUsage ? { tokenUsage: latestTokenUsage } : {}),
+            elapsedMs: Date.now() - startedAt
           });
         }
       });
