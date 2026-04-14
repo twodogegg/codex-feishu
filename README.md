@@ -19,19 +19,19 @@
 
 以下命令均可在飞书对话中直接使用。
 
-### Workspace 命令
+### Agents 命令
 
 | 命令 | 说明 | 备注 |
 | --- | --- | --- |
 | `/help` | 查看命令帮助 | - |
-| `/bind <workspace>` | 绑定当前会话到指定 workspace | 支持 slug/名称/路径选择 |
+| `/bind <agent>` | 绑定当前会话到指定 agent | 支持 slug/名称/路径选择 |
 | `/sessions` | 查看当前会话绑定与线程卡片 | 支持分页 |
 | `/sessions <page>` | 查看指定页会话状态 | 例：`/sessions 2` |
-| `/workspace` | 列出可见 workspace | 别名：`/workspaces` |
-| `/workspace status <workspace>` | 绑定并查看该 workspace 状态 | `status` 与 `bind` 语义等价 |
-| `/workspace remove <workspace>` | 从当前会话解绑该 workspace | 等价 remove 子命令 |
-| `/remove <workspace>` | 解绑当前会话中的 workspace | 别名：`/unbind` |
-| `/send <relative-path>` | 发送 workspace 内文件到飞书 | 仅允许 workspace 相对路径 |
+| `/agents` | 列出可见 agents | - |
+| `/agents status <agent>` | 绑定并查看该 agent 状态 | `status` 与 `bind` 语义等价 |
+| `/agents remove <agent>` | 从当前会话解绑该 agent | 等价 remove 子命令 |
+| `/remove <agent>` | 解绑当前会话中的 agent | 别名：`/unbind` |
+| `/send <relative-path>` | 发送 agent 内文件到飞书 | 仅允许 agent 相对路径 |
 
 ### Thread 命令
 
@@ -67,7 +67,14 @@
 ## 对话模式
 
 - 以 `/` 开头：按命令路由执行。
-- 非 `/` 文本：作为普通对话输入，直接续写当前 workspace 的 active thread。
+- 非 `/` 文本：作为普通对话输入，直接续写当前 agent 的 active thread。
+
+## 飞书话题使用
+
+- 在群聊或私聊中创建新话题后，机器人会把该话题视为独立会话（`threadKey`）。
+- 话题会话若尚未绑定 agent，会自动继承同一 chat 主会话的 agent 与 active thread。
+- 在话题内可直接使用 `/status`、`/sessions`、`/new` 等命令，无需再次 `/bind`。
+- `/sessions` 会话列表优先显示会话摘要（用户最近一句/Codex 最近一句/preview），不再主展示线程 ID。
 
 ## 快速开始
 

@@ -99,7 +99,7 @@ function buildWorkspaceCodexConfigToml(workspace: WorkspaceRecord): string {
 function readUserCodexTemplate(): UserCodexTemplate {
   const configPath = path.join(os.homedir(), ".codex", "config.toml");
   if (!fs.existsSync(configPath)) {
-    return {
+    return withDefaultModelProvider({
       modelProvider: undefined,
       approvalsReviewer: undefined,
       modelContextWindow: undefined,
@@ -112,7 +112,7 @@ function readUserCodexTemplate(): UserCodexTemplate {
       featureCodexHooks: undefined,
       context7Block: undefined,
       modelProviderBlock: undefined
-    };
+    });
   }
 
   const raw = fs.readFileSync(configPath, "utf8");
@@ -120,7 +120,7 @@ function readUserCodexTemplate(): UserCodexTemplate {
   const modelProvider =
     normalizeTomlStringScalar(extractScalar(raw, "model_provider")) ??
     inferredModelProvider;
-  return {
+  return withDefaultModelProvider({
     modelProvider,
     approvalsReviewer: normalizeTomlStringScalar(
       extractScalar(raw, "approvals_reviewer")
@@ -137,6 +137,23 @@ function readUserCodexTemplate(): UserCodexTemplate {
     modelProviderBlock: modelProvider
       ? extractNamedBlock(raw, `[model_providers.${stripTomlString(modelProvider)}]`)
       : undefined
+  });
+}
+
+function withDefaultModelProvider(template: UserCodexTemplate): UserCodexTemplate {
+  if (template.modelProvider) {
+    return template;
+  }
+
+  return {
+    ...template,
+    modelProvider: "localproxy",
+    modelProviderBlock: [
+      "[model_providers.localproxy]",
+      'base_url = "http://192.168.0.5:8317/v1"',
+      'env_key = "API_DARL"',
+      'name = "LocalProxy"'
+    ]
   };
 }
 

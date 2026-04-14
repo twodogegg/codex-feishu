@@ -11,35 +11,35 @@ const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   {
     name: "bind",
     category: "workspace",
-    summary: "绑定当前会话到指定 workspace。",
-    usage: ["/bind <workspace>"],
+    summary: "绑定当前会话到指定 agent。",
+    usage: ["/bind <agent>"],
     aliases: []
   },
   {
     name: "sessions",
     category: "workspace",
-    summary: "查看当前会话绑定的 workspace 与会话列表。",
+    summary: "查看当前会话绑定的 agent 与会话列表。",
     usage: ["/sessions", "/sessions <page>"],
     aliases: []
   },
   {
-    name: "workspace",
+    name: "agents",
     category: "workspace",
-    summary: "列出当前用户可见的 workspace。",
-    usage: ["/workspace"],
-    aliases: ["workspaces"]
+    summary: "列出当前用户可见的 agents。",
+    usage: ["/agents"],
+    aliases: []
   },
   {
     name: "remove",
     category: "workspace",
-    summary: "移除当前会话对某个 workspace 的绑定。",
-    usage: ["/remove <workspace>"],
+    summary: "移除当前会话对某个 agent 的绑定。",
+    usage: ["/remove <agent>"],
     aliases: ["unbind"]
   },
   {
     name: "send",
     category: "workspace",
-    summary: "将当前 workspace 内的文件发送到飞书会话。",
+    summary: "将当前 agent 工作目录内的文件发送到飞书会话。",
     usage: ["/send <relative-path>"],
     aliases: []
   },
@@ -74,14 +74,14 @@ const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   {
     name: "model",
     category: "codex",
-    summary: "查看或设置当前 workspace 默认模型。",
+    summary: "查看或设置当前 agent 默认模型。",
     usage: ["/model", "/model update", "/model <modelId>"],
     aliases: []
   },
   {
     name: "effort",
     category: "codex",
-    summary: "查看或设置当前 workspace 默认推理强度。",
+    summary: "查看或设置当前 agent 默认推理强度。",
     usage: ["/effort", "/effort <low|medium|high|xhigh>"],
     aliases: []
   },
@@ -95,14 +95,14 @@ const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   {
     name: "fast",
     category: "codex",
-    summary: "切换当前 workspace 的快模式。",
+    summary: "切换当前 agent 的快模式。",
     usage: ["/fast"],
     aliases: []
   },
   {
     name: "permissions",
     category: "codex",
-    summary: "查看当前 workspace 的权限策略。",
+    summary: "查看当前 agent 的权限策略。",
     usage: ["/permissions"],
     aliases: []
   },
@@ -137,7 +137,7 @@ const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
   {
     name: "review",
     category: "codex",
-    summary: "对当前 workspace 发起 code review。",
+    summary: "对当前 agent 发起 code review。",
     usage: ["/review"],
     aliases: []
   },

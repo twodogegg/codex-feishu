@@ -242,7 +242,7 @@ test("卡片回调会优先使用 value.chat_id 恢复会话上下文", async ()
       calls.push({ text, session });
       return {
         kind: "handled",
-        commandName: "workspace",
+        commandName: "agents",
         result: {
           kind: "message",
           title: "ok",
@@ -262,7 +262,7 @@ test("卡片回调会优先使用 value.chat_id 恢复会话上下文", async ()
     open_id: "ou_user",
     action: {
       value: {
-        command: "/workspace status default",
+        command: "/agents status default",
         chat_id: "oc_card_1",
         thread_id: "ot_card_1",
         root_id: "om_root_1",
@@ -280,7 +280,7 @@ test("卡片回调会优先使用 value.chat_id 恢复会话上下文", async ()
   assert.equal(result?.replyContext.parentMessageId, "om_parent_1");
   assert.equal(result?.replyContext.replyInThread, true);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.text, "/workspace status default");
+  assert.equal(calls[0]?.text, "/agents status default");
   assert.equal(calls[0]?.session.chatId, "oc_card_1");
   assert.equal(calls[0]?.session.threadKey, "ot_card_1");
 });

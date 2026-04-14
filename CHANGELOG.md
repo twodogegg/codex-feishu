@@ -10,7 +10,7 @@
 
 ### Changed
 
-- `/workspace` 卡片改为行级动作，支持 `/workspace status <slug>` 和 `/workspace remove <slug>`。
+- `/agents` 卡片改为行级动作，支持 `/agents status <slug>` 和 `/agents remove <slug>`。
 - 普通对话和 `/message` 的线程恢复策略调整，避免无条件 `resumeThread()` 导致 `no rollout found`。
 
 ### Fixed

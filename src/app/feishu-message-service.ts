@@ -212,10 +212,10 @@ function resolveCardActionCommand(actionValue: Record<string, unknown>): string 
       actionValue.workspaceId
     );
     if ((action === "status" || action === "bind") && selector) {
-      return `/workspace status ${selector}`;
+      return `/agents status ${selector}`;
     }
     if (action === "remove" && selector) {
-      return `/workspace remove ${selector}`;
+      return `/agents remove ${selector}`;
     }
   }
 

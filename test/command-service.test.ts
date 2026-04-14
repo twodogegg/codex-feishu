@@ -353,7 +353,7 @@ test("bind 会为用户建立默认 workspace 并绑定会话", async () => {
     if (result.kind === "handled") {
       assert.equal(result.commandName, "bind");
       assert.equal(result.result.kind, "message");
-      assert.match(result.result.body, /Default Workspace/);
+      assert.match(result.result.body, /Default Agent/);
     }
   } finally {
     fixture.cleanup();
@@ -386,15 +386,6 @@ test("/bind /绝对路径 会自动登记并绑定本机目录 workspace", async
       .find((item) => item.rootPath === externalWorkspacePath);
     assert.ok(workspace);
     assert.equal(workspace.name, "爱马仕");
-    const codexConfigPath = path.join(externalWorkspacePath, ".codex", "config.toml");
-    assert.equal(fs.existsSync(codexConfigPath), true);
-    const codexConfigText = fs.readFileSync(codexConfigPath, "utf8");
-    assert.match(codexConfigText, /model = "gpt-5\.4"/);
-    assert.match(codexConfigText, /model_reasoning_effort = "high"/);
-    assert.match(codexConfigText, /model_provider = "localproxy"/);
-    assert.match(codexConfigText, /\[model_providers\.localproxy\]/);
-    assert.match(codexConfigText, /base_url = "http:\/\/192\.168\.0\.5:8317\/v1"/);
-    assert.match(codexConfigText, /env_key = "API_DARL"/);
 
     const binding = fixture.db.sessionBindings.getBySession(
       user.id,
@@ -460,7 +451,7 @@ test("/permissions 会返回当前 workspace policy", async () => {
   }
 });
 
-test("/model 和 /effort 会同步更新 workspace/.codex/config.toml", async () => {
+test("/model 和 /effort 会更新当前 workspace 默认配置", async () => {
   const fixture = createFixture();
 
   try {
@@ -478,13 +469,10 @@ test("/model 和 /effort 会同步更新 workspace/.codex/config.toml", async ()
     );
     assert.equal(effortResult.kind, "handled");
 
-    const codexConfigPath = path.join(workspace.rootPath, ".codex", "config.toml");
-    assert.equal(fs.existsSync(codexConfigPath), true);
-    const codexConfigText = fs.readFileSync(codexConfigPath, "utf8");
-    assert.match(codexConfigText, /model = "gpt-5\.4-mini"/);
-    assert.match(codexConfigText, /model_reasoning_effort = "medium"/);
-    assert.match(codexConfigText, /\[model_providers\.localproxy\]/);
-    assert.match(codexConfigText, /env_key = "API_DARL"/);
+    const updatedWorkspace = fixture.db.workspaces.getById(workspace.id);
+    assert.ok(updatedWorkspace);
+    assert.equal(updatedWorkspace.defaultModel, "gpt-5.4-mini");
+    assert.equal(updatedWorkspace.defaultEffort, "medium");
   } finally {
     fixture.cleanup();
   }
@@ -547,7 +535,7 @@ test("/statusline 会返回状态卡展示项说明", async () => {
     if (result.kind === "handled") {
       assert.equal(result.commandName, "statusline");
       assert.equal(result.result.kind, "message");
-      assert.match(result.result.body, /workspace: Default Workspace/);
+      assert.match(result.result.body, /agent: Default Agent/);
       assert.match(result.result.body, /worker state: ready/);
     }
   } finally {
@@ -609,8 +597,8 @@ test("/help 会返回命令帮助", async () => {
     if (result.kind === "handled") {
       assert.equal(result.commandName, "help");
       assert.equal(result.result.kind, "message");
-      assert.match(result.result.body, /\/bind <workspace>/);
-      assert.match(result.result.body, /\/workspace/);
+      assert.match(result.result.body, /\/bind <agent>/);
+      assert.match(result.result.body, /\/agents/);
       assert.match(result.result.body, /\/subagents/);
     }
   } finally {
@@ -782,7 +770,7 @@ test("只会同步属于当前 workspace 的线程到当前视图", async () => 
   }
 });
 
-test("/workspace status <slug> 会切换到目标 workspace 并返回状态卡", async () => {
+test("/agents status <slug> 会切换到目标 workspace 并返回状态卡", async () => {
   const fixture = createFixture();
 
   try {
@@ -802,13 +790,13 @@ test("/workspace status <slug> 会切换到目标 workspace 并返回状态卡",
     });
 
     const result = await fixture.service.executeText(
-      `/workspace status ${secondWorkspace.slug}`,
+      `/agents status ${secondWorkspace.slug}`,
       fixture.session
     );
 
     assert.equal(result.kind, "handled");
     if (result.kind === "handled") {
-      assert.equal(result.commandName, "workspace");
+      assert.equal(result.commandName, "agents");
       assert.equal(result.result.kind, "card");
     }
 
@@ -973,8 +961,18 @@ test("重启后会保留 session 绑定和 active thread", async () => {
     if (whereResult.kind === "handled") {
       assert.equal(whereResult.commandName, "sessions");
       assert.equal(whereResult.result.kind, "card");
-      assert.match(JSON.stringify(whereResult.result.card), new RegExp(activeThreadId));
+      assert.match(JSON.stringify(whereResult.result.card), /当前会话/);
     }
+
+    const secondUser = second.db.users.getByFeishuOpenId(second.session.actor.openId);
+    assert.ok(secondUser);
+    const secondBinding = second.db.sessionBindings.getBySession(
+      secondUser.id,
+      second.session.chatId,
+      null
+    );
+    assert.ok(secondBinding);
+    assert.equal(secondBinding.activeThreadId, activeThreadId);
 
     second.close();
   } finally {
@@ -1034,8 +1032,51 @@ test("/sessions 状态卡会展示最近线程并提供切换按钮", async () =
       assert.match(cardJson, /第二条对话/);
       assert.match(cardJson, /第一条对话/);
       assert.match(cardJson, /workspace 卡片交互/);
+      assert.doesNotMatch(cardJson, /codex-thread-2/);
+      assert.doesNotMatch(cardJson, /codex-thread-1/);
+      assert.doesNotMatch(cardJson, /codex:/);
+      assert.doesNotMatch(cardJson, /id: `/);
       assert.match(cardJson, /\/switch/);
     }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("群聊话题新会话会继承主会话已绑定的 agent", async () => {
+  const fixture = createFixture();
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    const topicSession = {
+      ...fixture.session,
+      threadKey: "ot_topic_1"
+    };
+    const result = await fixture.service.executeText("/status", topicSession);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "status");
+      assert.equal(result.result.kind, "message");
+      assert.doesNotMatch(result.result.body, /当前未绑定 agent/);
+    }
+
+    const user = fixture.db.users.getByFeishuOpenId(fixture.session.actor.openId);
+    assert.ok(user);
+    const chatBinding = fixture.db.sessionBindings.getBySession(
+      user.id,
+      fixture.session.chatId,
+      null
+    );
+    assert.ok(chatBinding);
+    const topicBinding = fixture.db.sessionBindings.getBySession(
+      user.id,
+      fixture.session.chatId,
+      "ot_topic_1"
+    );
+    assert.ok(topicBinding);
+    assert.equal(topicBinding.workspaceId, chatBinding.workspaceId);
+    assert.equal(topicBinding.activeThreadId, chatBinding.activeThreadId);
   } finally {
     fixture.cleanup();
   }

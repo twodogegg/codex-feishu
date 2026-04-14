@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 
 import { createCommandRouter, parseUserInput } from "../domain/commanding/index.js";
 import { listCommandDefinitions } from "../commands/index.js";
-import { syncWorkspaceCodexConfig } from "../codex/workspace-config.js";
 import type { CodexThreadSummary, CodexThreadTokenUsage } from "../codex/app-server-client.js";
 import type { DatabaseContext } from "../db/index.js";
 import type { ThreadRecord, WorkspaceRecord } from "../types/db.js";
@@ -175,7 +174,7 @@ function createHandlers(): CommandHandlerMap<HandlerContext, CommandResponse> {
     help: (_input, context) => handleHelpCommand(context),
     bind: (input, context) => handleBindCommand(input.argText, context),
     sessions: (input, context) => handleSessionsCommand(input.argText, context),
-    workspace: (input, context) => handleWorkspaceCommand(input.argText, context),
+    agents: (input, context) => handleWorkspaceCommand(input.argText, context),
     remove: (input, context) => handleRemoveCommand(input.argText, context),
     send: (input, context) => handleSendCommand(input.argText, context),
     message: (_input, context) => handleMessageCommand(context),
@@ -203,7 +202,7 @@ async function handleBindCommand(
 ): Promise<CommandResponse> {
   const selector = workspaceSelector.trim();
   if (!selector) {
-    return messageResponse("参数缺失", "用法：`/bind <workspace>`");
+    return messageResponse("参数缺失", "用法：`/bind <agent>`");
   }
 
   const state = getCurrentBindingState(context);
@@ -212,13 +211,12 @@ async function handleBindCommand(
 
   if (!workspace) {
     return messageResponse(
-      "未找到 Workspace",
-      `找不到 workspace：\`${selector}\``
+      "未找到 Agent",
+      `找不到 agent：\`${selector}\``
     );
   }
 
   const binding = upsertSessionBinding(context, workspace.id);
-  syncWorkspaceCodexConfig(workspace);
   const worker = ensureWorkspaceWorker(context, workspace);
   await worker.ensureReady();
   await syncWorkspaceThreads(context, workspace, worker);
@@ -226,7 +224,7 @@ async function handleBindCommand(
   return messageResponse(
     "绑定成功",
     [
-      `workspace: \`${workspace.name}\``,
+      `agent: \`${workspace.name}\``,
       `slug: \`${workspace.slug}\``,
       `binding: \`${binding.id}\``,
       `worker: \`${worker.workspaceId}\``
@@ -242,7 +240,7 @@ async function handleSessionsCommand(
   if (!state.binding || !state.workspace) {
     return messageResponse(
       "当前未绑定",
-      "当前会话还没有绑定 workspace。先使用 `/bind <workspace>`。"
+      "当前会话还没有绑定 agent。先使用 `/bind <agent>`。"
     );
   }
 
@@ -276,7 +274,7 @@ async function handleWorkspaceCommand(
     if (!selector) {
       return messageResponse(
         "参数缺失",
-        "用法：`/workspace`、`/workspace status <workspace>`、`/workspace remove <workspace>`"
+        "用法：`/agents`、`/agents status <agent>`、`/agents remove <agent>`"
       );
     }
 
@@ -289,21 +287,21 @@ async function handleWorkspaceCommand(
     }
 
     return messageResponse(
-      "不支持的 workspace 子命令",
-      "用法：`/workspace`、`/workspace status <workspace>`、`/workspace remove <workspace>`"
+      "不支持的 agents 子命令",
+      "用法：`/agents`、`/agents status <agent>`、`/agents remove <agent>`"
     );
   }
 
   const actor = getCurrentBindingState(context).actor;
   const workspaces = context.db.workspaces.listByOwnerUserId(actor.id);
   if (workspaces.length === 0) {
-    return messageResponse("暂无 Workspace", "当前用户还没有可用 workspace。");
+    return messageResponse("暂无 Agent", "当前用户还没有可用 agent。");
   }
 
   const currentWorkspaceId = getCurrentBindingState(context).workspace?.id;
   return {
     kind: "card",
-    title: "我的 Workspaces",
+    title: "我的 Agents",
     card: buildWorkspaceListCard(workspaces, currentWorkspaceId)
   };
 }
@@ -340,18 +338,18 @@ function handleRemoveCommand(
 ): CommandResponse {
   const state = getCurrentBindingState(context);
   if (!state.binding) {
-    return messageResponse("无需解绑", "当前会话没有绑定 workspace。");
+    return messageResponse("无需解绑", "当前会话没有绑定 agent。");
   }
 
   const selector = workspaceSelector.trim();
   if (!selector) {
-    return messageResponse("参数缺失", "用法：`/remove <workspace>`");
+    return messageResponse("参数缺失", "用法：`/remove <agent>`");
   }
 
   if (!state.workspace || !matchesWorkspaceSelector(state.workspace, selector)) {
     return messageResponse(
       "解绑失败",
-      `当前会话未绑定指定 workspace：\`${selector}\``
+      `当前会话未绑定指定 agent：\`${selector}\``
     );
   }
 
@@ -366,7 +364,7 @@ function handleRemoveCommand(
 
   return messageResponse(
     "解绑成功",
-    `已从当前会话移除 workspace：\`${state.workspace.name}\``
+    `已从当前会话移除 agent：\`${state.workspace.name}\``
   );
 }
 
@@ -383,14 +381,14 @@ function handleSendCommand(
   if (!requestedPath) {
     return messageResponse(
       "参数缺失",
-      "用法：`/send <当前 workspace 下的相对文件路径>`"
+      "用法：`/send <当前 agent 下的相对文件路径>`"
     );
   }
 
   const resolved = path.resolve(state.workspace.rootPath, requestedPath);
   const relative = path.relative(state.workspace.rootPath, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    return messageResponse("路径非法", "只能发送当前 workspace 内的文件。");
+    return messageResponse("路径非法", "只能发送当前 agent 内的文件。");
   }
 
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
@@ -413,7 +411,7 @@ async function handleMessageCommand(
     return state;
   }
   if (!state.thread) {
-    return messageResponse("当前线程", "当前 workspace 还没有线程。");
+    return messageResponse("当前线程", "当前 agent 还没有线程。");
   }
 
   const worker = ensureWorkspaceWorker(context, state.workspace);
@@ -496,7 +494,7 @@ async function handleSwitchCommand(
   if (!candidate) {
     return messageResponse(
       "线程不存在",
-      `当前 workspace 下找不到线程：\`${selector}\``
+      `当前 agent 下找不到线程：\`${selector}\``
     );
   }
 
@@ -582,7 +580,7 @@ async function handleModelCommand(
   if (!nextModel) {
     return messageResponse(
       "当前模型",
-      `workspace \`${state.workspace.name}\` 的默认模型是 \`${state.workspace.defaultModel}\``
+      `agent \`${state.workspace.name}\` 的默认模型是 \`${state.workspace.defaultModel}\``
     );
   }
 
@@ -595,13 +593,10 @@ async function handleModelCommand(
   const updated = context.db.workspaces.updateDefaults(state.workspace.id, {
     defaultModel: nextModel
   });
-  if (updated) {
-    syncWorkspaceCodexConfig(updated);
-  }
 
   return messageResponse(
     "模型已更新",
-    `当前 workspace 默认模型已更新为 \`${updated?.defaultModel || nextModel}\``
+    `当前 agent 默认模型已更新为 \`${updated?.defaultModel || nextModel}\``
   );
 }
 
@@ -618,20 +613,17 @@ function handleEffortCommand(
   if (!nextEffort) {
     return messageResponse(
       "当前推理强度",
-      `workspace \`${state.workspace.name}\` 的默认 effort 是 \`${state.workspace.defaultEffort}\``
+      `agent \`${state.workspace.name}\` 的默认 effort 是 \`${state.workspace.defaultEffort}\``
     );
   }
 
   const updated = context.db.workspaces.updateDefaults(state.workspace.id, {
     defaultEffort: nextEffort
   });
-  if (updated) {
-    syncWorkspaceCodexConfig(updated);
-  }
 
   return messageResponse(
     "推理强度已更新",
-    `当前 workspace 默认 effort 已更新为 \`${updated?.defaultEffort || nextEffort}\``
+    `当前 agent 默认 effort 已更新为 \`${updated?.defaultEffort || nextEffort}\``
   );
 }
 
@@ -640,7 +632,7 @@ async function handleStatusCommand(
 ): Promise<CommandResponse> {
   const state = getCurrentBindingState(context);
   if (!state.workspace) {
-    return messageResponse("Session 状态", "当前未绑定 workspace。");
+    return messageResponse("Session 状态", "当前未绑定 agent。");
   }
 
   const worker = ensureWorkspaceWorker(context, state.workspace);
@@ -667,7 +659,7 @@ async function handleCompactCommand(
     return state;
   }
   if (!state.thread) {
-    return messageResponse("无法 Compact", "当前 workspace 没有 active thread。");
+    return messageResponse("无法 Compact", "当前 agent 没有 active thread。");
   }
 
   const worker = ensureWorkspaceWorker(context, state.workspace);
@@ -704,7 +696,7 @@ function handleFastCommand(context: HandlerContext): CommandResponse {
 
   return messageResponse(
     "Fast Mode",
-    `当前 workspace 的 fastMode 已切换为 \`${!currentFast}\``
+    `当前 agent 的 fastMode 已切换为 \`${!currentFast}\``
   );
 }
 
@@ -717,7 +709,7 @@ function handlePermissionsCommand(context: HandlerContext): CommandResponse {
   return messageResponse(
     "权限策略",
     [
-      `workspace: \`${state.workspace.name}\``,
+      `agent: \`${state.workspace.name}\``,
       `workspaceRoot: \`${state.workspace.rootPath}\``,
       `defaultModel: \`${state.workspace.defaultModel}\``,
       `defaultEffort: \`${state.workspace.defaultEffort}\``,
@@ -742,7 +734,7 @@ function handleExperimentalCommand(context: HandlerContext): CommandResponse {
       "第一版未开放额外实验特性切换。",
       "当前运行模式：single-machine",
       "experimentalApi: true",
-      `workspace: ${state.workspace.name}`,
+      `agent: ${state.workspace.name}`,
       "后续可在这里接入 `experimentalFeature/list`。"
     ].join("\n")
   );
@@ -758,7 +750,7 @@ function handleStatuslineCommand(context: HandlerContext): CommandResponse {
   return messageResponse(
     "状态展示项",
     [
-      `workspace: ${state.workspace.name}`,
+      `agent: ${state.workspace.name}`,
       `active thread: ${state.thread?.id || "无"}`,
       `model: ${state.workspace.defaultModel}`,
       `effort: ${state.workspace.defaultEffort}`,
@@ -797,7 +789,7 @@ function handleHelpCommand(context: HandlerContext): CommandResponse {
       "",
       body,
       "",
-      "直接发送普通文本，会继续当前 workspace 的 active thread。"
+      "直接发送普通文本，会继续当前 agent 的 active thread。"
     ].join("\n")
   );
 }
@@ -816,7 +808,7 @@ async function handleSkillsCommand(
     "可用 Skills",
     skills.length > 0
       ? skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")
-      : "当前 workspace 没有可见 skills。"
+      : "当前 agent 没有可见 skills。"
   );
 }
 
@@ -828,7 +820,7 @@ async function handleReviewCommand(
     return state;
   }
   if (!state.thread) {
-    return messageResponse("无法 Review", "当前 workspace 还没有 active thread。");
+    return messageResponse("无法 Review", "当前 agent 还没有 active thread。");
   }
 
   const worker = ensureWorkspaceWorker(context, state.workspace);
@@ -845,7 +837,7 @@ async function handleRenameCommand(
     return state;
   }
   if (!state.thread) {
-    return messageResponse("无法重命名", "当前 workspace 没有 active thread。");
+    return messageResponse("无法重命名", "当前 agent 没有 active thread。");
   }
 
   const nextName = name.trim();
@@ -1238,17 +1230,13 @@ function ensureUser(
   db.workspaces.upsert({
     id: randomUUID(),
     ownerUserId: user.id,
-    name: "Default Workspace",
+    name: "Default Agent",
     slug: "default",
     rootPath,
     status: "ready",
     defaultModel: defaultCodexModel,
     defaultEffort: defaultCodexEffort
   });
-  const defaultWorkspace = db.workspaces.getByOwnerAndSlug(user.id, "default");
-  if (defaultWorkspace) {
-    syncWorkspaceCodexConfig(defaultWorkspace);
-  }
 
   return user;
 }
@@ -1259,11 +1247,31 @@ function getCurrentBindingState(context: HandlerContext): BindingState {
     throw new Error("Actor record must exist before command execution");
   }
 
-  const binding = context.db.sessionBindings.getBySession(
+  const threadKey = context.session.threadKey ?? null;
+  let binding = context.db.sessionBindings.getBySession(
     actor.id,
     context.session.chatId,
-    context.session.threadKey ?? null
+    threadKey
   );
+  if (!binding && threadKey) {
+    const chatBinding = context.db.sessionBindings.getBySession(
+      actor.id,
+      context.session.chatId,
+      null
+    );
+    if (chatBinding) {
+      // 话题会话默认继承同 chat 主会话绑定的 agent 与 active thread。
+      binding = context.db.sessionBindings.upsert({
+        id: randomUUID(),
+        userId: actor.id,
+        chatId: context.session.chatId,
+        threadKey,
+        workspaceId: chatBinding.workspaceId,
+        activeThreadId: chatBinding.activeThreadId
+      });
+    }
+  }
+
   const workspace = binding?.workspaceId
     ? context.db.workspaces.getById(binding.workspaceId)
     : null;
@@ -1290,7 +1298,7 @@ function requireBoundWorkspaceState(
   if (!state.binding || !state.workspace) {
     return messageResponse(
       "当前未绑定",
-      "当前会话还没有绑定 workspace。先使用 `/bind <workspace>`。"
+      "当前会话还没有绑定 agent。先使用 `/bind <agent>`。"
     );
   }
 
@@ -1365,7 +1373,6 @@ function ensureWorkspaceFromAbsolutePath(
     defaultModel: context.defaultCodexModel,
     defaultEffort: context.defaultCodexEffort
   });
-  syncWorkspaceCodexConfig(workspace);
   return workspace;
 }
 
@@ -1649,7 +1656,7 @@ function buildWorkspaceStatusText(
 ): string {
   const worker = ensureWorkspaceWorker(context, workspace);
   return [
-    `workspace: \`${workspace.name}\` (\`${workspace.slug}\`)`,
+    `agent: \`${workspace.name}\` (\`${workspace.slug}\`)`,
     `status: \`${workspace.status}\``,
     `model: \`${workspace.defaultModel}\``,
     `effort: \`${workspace.defaultEffort}\``,
@@ -1807,9 +1814,7 @@ function buildThreadRows(
               {
                 tag: "markdown",
                 content: [
-                  `${isCurrent ? "🟢 当前线程" : "⚪ 历史线程"} · **${sanitizeCardMarkdown(thread.name || thread.id)}**`,
-                  `id: \`${thread.id}\``,
-                  `codex: \`${thread.codexThreadId}\``,
+                  `${isCurrent ? "🟢 当前会话" : "⚪ 历史会话"} · **${sanitizeCardMarkdown(resolveSessionDisplayTitle(thread))}**`,
                   `状态: \`${thread.status}\`${formatThreadUpdatedAt(thread)}`,
                   formatThreadPreview(thread)
                 ].join("\n")
@@ -1907,6 +1912,21 @@ function formatThreadPreview(thread: ThreadRecord): string {
   return lines.join("\n");
 }
 
+function resolveSessionDisplayTitle(thread: ThreadRecord): string {
+  const name = thread.name?.trim();
+  if (name) {
+    return name;
+  }
+
+  const preview =
+    typeof thread.metadata.preview === "string" ? thread.metadata.preview.trim() : "";
+  if (preview) {
+    return truncateThreadLine(preview, 28);
+  }
+
+  return "未命名会话";
+}
+
 function truncateThreadLine(text: string, maxLength: number): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) {
@@ -1968,7 +1988,7 @@ function buildWorkspaceListCard(
     header: {
       title: {
         tag: "plain_text",
-        content: "我的 Workspaces"
+        content: "我的 Agents"
       },
       template: "turquoise"
     },
@@ -1987,7 +2007,7 @@ function buildWorkspaceListCard(
             columns: [
               buildCommandButtonColumn(
                 workspace.id === currentWorkspaceId ? "当前状态" : "进入",
-                `/workspace status ${workspace.slug}`,
+                `/agents status ${workspace.slug}`,
                 "primary",
                 {
                   kind: "workspace",
@@ -1997,7 +2017,7 @@ function buildWorkspaceListCard(
               ),
               buildCommandButtonColumn(
                 "移除",
-                `/workspace remove ${workspace.slug}`,
+                `/agents remove ${workspace.slug}`,
                 undefined,
                 {
                   kind: "workspace",
@@ -2104,7 +2124,7 @@ function isThreadUnavailableForReadError(error: unknown): boolean {
 
 function resolveHelpCategoryTitle(category: string): string {
   if (category === "workspace") {
-    return "Workspace";
+    return "Agents";
   }
   if (category === "thread") {
     return "Thread";

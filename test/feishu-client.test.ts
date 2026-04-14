@@ -285,7 +285,7 @@ test("sendCommandResponse 会把话题上下文注入卡片按钮 payload", asyn
     },
     {
       kind: "card",
-      title: "我的 Workspaces",
+      title: "我的 Agents",
       card: {
         schema: "2.0",
         body: {
@@ -298,7 +298,7 @@ test("sendCommandResponse 会把话题上下文注入卡片按钮 payload", asyn
               },
               value: {
                 kind: "callback",
-                command: "/workspace status default"
+                command: "/agents status default"
               }
             }
           ]
@@ -328,7 +328,7 @@ test("sendCommandResponse 会把话题上下文注入卡片按钮 payload", asyn
                 },
                 value: {
                   kind: "callback",
-                  command: "/workspace status default",
+                  command: "/agents status default",
                   chat_id: "oc_chat_ctx",
                   thread_id: "ot_ctx_1",
                   root_id: "om_root_ctx",

@@ -26,7 +26,7 @@ export function createApplicationRuntime(
         `[codex-feishu] workers=${container.workers.getWorkerCount()} dataDir=${config.dataDir}`
       );
 
-      const demo = await runLocalFeishuCommandDemo(container.commands, "/workspace", {
+      const demo = await runLocalFeishuCommandDemo(container.commands, "/agents", {
         openId: "local-demo-user",
         displayName: "Local Demo User"
       });
