@@ -51,7 +51,6 @@
 | 命令 | 说明 | 备注 |
 | --- | --- | --- |
 | `/model` | 查看默认模型 | - |
-| `/model update` | 拉取可用模型列表 | - |
 | `/model <modelId>` | 设置默认模型 | 持久化到 workspace |
 | `/effort` | 查看默认推理强度 | - |
 | `/effort <low\|medium\|high\|xhigh>` | 设置默认推理强度 | 持久化到 workspace |

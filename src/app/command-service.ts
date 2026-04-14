@@ -481,7 +481,7 @@ async function handleSwitchCommand(
 
   const selector = threadSelector.trim();
   if (!selector) {
-    return messageResponse("参数缺失", "用法：`/switch <threadId>`");
+    return handleSessionsCommand("", context);
   }
 
   const worker = ensureWorkspaceWorker(context, state.workspace);
@@ -578,16 +578,19 @@ async function handleModelCommand(
   const nextModel = argText.trim();
   const worker = ensureWorkspaceWorker(context, state.workspace);
   if (!nextModel) {
-    return messageResponse(
-      "当前模型",
-      `agent \`${state.workspace.name}\` 的默认模型是 \`${state.workspace.defaultModel}\``
-    );
+    const models = await worker.listModels();
+    return {
+      kind: "card",
+      title: "模型列表",
+      card: buildModelListCard(state.workspace, models)
+    };
   }
 
   if (nextModel === "update") {
-    const models = await worker.listModels();
-    const body = models.map((model) => `- ${model.id} (${model.displayName})`).join("\n");
-    return messageResponse("可用模型", body || "暂无可用模型。");
+    return messageResponse(
+      "命令已废弃",
+      "请直接使用 `/model` 查看模型列表并点击切换。"
+    );
   }
 
   const updated = context.db.workspaces.updateDefaults(state.workspace.id, {
@@ -760,38 +763,11 @@ function handleStatuslineCommand(context: HandlerContext): CommandResponse {
 }
 
 function handleHelpCommand(context: HandlerContext): CommandResponse {
-  const groupedDefinitions = new Map<string, Array<ReturnType<typeof listCommandDefinitions>[number]>>();
-  for (const definition of listCommandDefinitions()) {
-    const existing = groupedDefinitions.get(definition.category) || [];
-    existing.push(definition);
-    groupedDefinitions.set(definition.category, existing);
-  }
-
-  const body = [...groupedDefinitions.entries()]
-    .map(([category, definitions]) => {
-      const title = resolveHelpCategoryTitle(category);
-      const lines = definitions.map((definition) => {
-        const usage = definition.usage.join("\n");
-        const aliases = definition.aliases.length > 0
-          ? `\n别名: ${definition.aliases.map((alias) => `\`${alias}\``).join("、")}`
-          : "";
-        return `${usage}\n${definition.summary}${aliases}`;
-      });
-
-      return [`**${title}**`, ...lines].join("\n\n");
-    })
-    .join("\n\n");
-
-  return messageResponse(
-    "命令帮助",
-    [
-      "当前可直接在飞书里使用这些命令：",
-      "",
-      body,
-      "",
-      "直接发送普通文本，会继续当前 agent 的 active thread。"
-    ].join("\n")
-  );
+  return {
+    kind: "card",
+    title: "命令帮助",
+    card: buildHelpCard(listCommandDefinitions())
+  };
 }
 
 async function handleSkillsCommand(
@@ -804,12 +780,11 @@ async function handleSkillsCommand(
 
   const worker = ensureWorkspaceWorker(context, state.workspace);
   const skills = await worker.listSkills();
-  return messageResponse(
-    "可用 Skills",
-    skills.length > 0
-      ? skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")
-      : "当前 agent 没有可见 skills。"
-  );
+  return {
+    kind: "card",
+    title: "可用 Skills",
+    card: buildSkillsCard(skills)
+  };
 }
 
 async function handleReviewCommand(
@@ -842,7 +817,11 @@ async function handleRenameCommand(
 
   const nextName = name.trim();
   if (!nextName) {
-    return messageResponse("参数缺失", "用法：`/rename <name>`");
+    return {
+      kind: "card",
+      title: "重命名线程",
+      card: buildRenameThreadCard(state.thread)
+    };
   }
 
   const worker = ensureWorkspaceWorker(context, state.workspace);
@@ -2029,6 +2008,290 @@ function buildWorkspaceListCard(
           }
         ];
       })
+    }
+  };
+}
+
+function buildHelpCard(
+  definitions: readonly ReturnType<typeof listCommandDefinitions>[number][]
+): Record<string, unknown> {
+  const grouped = new Map<string, Array<ReturnType<typeof listCommandDefinitions>[number]>>();
+  for (const definition of definitions) {
+    const existing = grouped.get(definition.category) || [];
+    existing.push(definition);
+    grouped.set(definition.category, existing);
+  }
+
+  const sections: Array<Record<string, unknown>> = [];
+  for (const [category, items] of grouped.entries()) {
+    sections.push({
+      tag: "markdown",
+      content: `**${resolveHelpCategoryTitle(category)}**`
+    });
+    for (const item of items) {
+      const primaryUsage = item.usage[0] || `/${item.name}`;
+      const quickCommand = resolveHelpQuickCommand(item);
+      const aliases = item.aliases.length > 0
+        ? `\n别名: ${item.aliases.map((alias) => `\`${alias}\``).join("、")}`
+        : "";
+      sections.push({
+        tag: "markdown",
+        content: `${item.summary}${aliases}`
+      });
+      sections.push({
+        tag: "column_set",
+        flex_mode: "none",
+        columns: [
+          buildCommandButtonColumn(
+            primaryUsage,
+            quickCommand,
+            "primary",
+            {
+              kind: "help",
+              action: "quick_command",
+              command_name: item.name,
+              usage: primaryUsage
+            }
+          )
+        ]
+      });
+    }
+    sections.push({ tag: "hr" });
+  }
+  if (sections.length > 0) {
+    const lastSection = sections[sections.length - 1] as { tag?: unknown };
+    if (lastSection.tag === "hr") {
+      sections.pop();
+    }
+  }
+
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      width_mode: "fill"
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "命令帮助"
+      },
+      template: "blue"
+    },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: "点击下方快捷指令可直接执行。"
+        },
+        ...sections
+      ]
+    }
+  };
+}
+
+function resolveHelpQuickCommand(
+  definition: ReturnType<typeof listCommandDefinitions>[number]
+): string {
+  if (definition.name === "switch") {
+    return "/switch";
+  }
+  if (definition.name === "rename") {
+    return "/rename";
+  }
+  return definition.usage[0] || `/${definition.name}`;
+}
+
+function buildModelListCard(
+  workspace: WorkspaceRecord,
+  models: Array<{ id: string; displayName: string }>
+): Record<string, unknown> {
+  const rows = models.flatMap((model, index) => {
+    const isCurrent = model.id === workspace.defaultModel;
+    const elements: Array<Record<string, unknown>> = [
+      {
+        tag: "column_set",
+        flex_mode: "none",
+        columns: [
+          {
+            tag: "column",
+            width: "weighted",
+            weight: 5,
+            elements: [
+              {
+                tag: "markdown",
+                content: `${isCurrent ? "🟢" : "⚪"} **${sanitizeCardMarkdown(model.displayName || model.id)}**\n\`${model.id}\``
+              }
+            ]
+          },
+          {
+            tag: "column",
+            width: "auto",
+            elements: isCurrent
+              ? [
+                  {
+                    tag: "button",
+                    text: {
+                      tag: "plain_text",
+                      content: "当前模型"
+                    },
+                    disabled: true
+                  }
+                ]
+              : [
+                  {
+                    tag: "button",
+                    text: {
+                      tag: "plain_text",
+                      content: "切换"
+                    },
+                    type: "primary",
+                    value: {
+                      kind: "callback",
+                      command: `/model ${model.id}`,
+                      model_id: model.id
+                    }
+                  }
+                ]
+          }
+        ]
+      }
+    ];
+    if (index < models.length - 1) {
+      elements.push({ tag: "hr" });
+    }
+    return elements;
+  });
+
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      width_mode: "fill"
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "模型列表"
+      },
+      template: "indigo"
+    },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: `当前 agent: **${sanitizeCardMarkdown(workspace.name)}**\n当前模型: \`${workspace.defaultModel}\``
+        },
+        ...(rows.length > 0
+          ? rows
+          : [
+              {
+                tag: "markdown",
+                content: "暂无可用模型。"
+              }
+            ])
+      ]
+    }
+  };
+}
+
+function buildSkillsCard(
+  skills: Array<{ name: string; description: string }>
+): Record<string, unknown> {
+  const sorted = [...skills].sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      width_mode: "fill"
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: `可用 Skills (${sorted.length})`
+      },
+      template: "wathet"
+    },
+    body: {
+      elements:
+        sorted.length > 0
+          ? sorted.flatMap((skill, index) => {
+              const rows: Array<Record<string, unknown>> = [
+                {
+                  tag: "markdown",
+                  content: `**${sanitizeCardMarkdown(skill.name)}**\n${sanitizeCardMarkdown(skill.description || "无描述")}`
+                }
+              ];
+              if (index < sorted.length - 1) {
+                rows.push({ tag: "hr" });
+              }
+              return rows;
+            })
+          : [
+              {
+                tag: "markdown",
+                content: "当前 agent 没有可见 skills。"
+              }
+            ]
+    }
+  };
+}
+
+function buildRenameThreadCard(thread: ThreadRecord): Record<string, unknown> {
+  const now = new Date();
+  const timestampName = `线程-${now.toISOString().replace(/[-:]/g, "").slice(0, 13)}`;
+  const preview =
+    typeof thread.metadata.preview === "string" ? thread.metadata.preview.trim() : "";
+  const previewName = preview ? truncateThreadLine(preview, 20) : "";
+
+  const buttons: Array<Record<string, unknown>> = [
+    buildCommandButtonColumn("自动命名", `/rename ${timestampName}`, "primary", {
+      kind: "thread",
+      action: "rename",
+      thread_id: thread.id
+    }),
+    buildCommandButtonColumn("查看最近消息", "/message", undefined, {
+      kind: "thread",
+      action: "messages",
+      thread_id: thread.id
+    })
+  ];
+
+  if (previewName) {
+    buttons.unshift(
+      buildCommandButtonColumn("用摘要命名", `/rename ${previewName}`, "primary", {
+        kind: "thread",
+        action: "rename",
+        thread_id: thread.id
+      })
+    );
+  }
+
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      width_mode: "fill"
+    },
+    header: {
+      title: {
+        tag: "plain_text",
+        content: "重命名线程"
+      },
+      template: "orange"
+    },
+    body: {
+      elements: [
+        {
+          tag: "markdown",
+          content: `当前线程：**${sanitizeCardMarkdown(thread.name || thread.id)}**\n请选择一个命名方案，或直接发送 \`/rename <name>\`。`
+        },
+        {
+          tag: "column_set",
+          flex_mode: "none",
+          columns: buttons
+        }
+      ]
     }
   };
 }

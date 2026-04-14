@@ -75,7 +75,7 @@ const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
     name: "model",
     category: "codex",
     summary: "查看或设置当前 agent 默认模型。",
-    usage: ["/model", "/model update", "/model <modelId>"],
+    usage: ["/model", "/model <modelId>"],
     aliases: []
   },
   {

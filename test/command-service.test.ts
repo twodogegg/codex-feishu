@@ -596,10 +596,128 @@ test("/help 会返回命令帮助", async () => {
     assert.equal(result.kind, "handled");
     if (result.kind === "handled") {
       assert.equal(result.commandName, "help");
+      assert.equal(result.result.kind, "card");
+      const cardJson = JSON.stringify(result.result.card);
+      assert.match(cardJson, /命令帮助/);
+      assert.match(cardJson, /\/bind <agent>/);
+      assert.match(cardJson, /\/agents/);
+      assert.match(cardJson, /\/subagents/);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("/model 会返回可点击切换的模型卡片", async () => {
+  const fixture = createFixture();
+  const worker = fixture.workers.getWorker("") as unknown as {
+    listModels: () => Promise<Array<{ id: string; displayName: string }>>;
+  };
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    worker.listModels = async () => [
+      { id: "gpt-5.4", displayName: "GPT-5.4" },
+      { id: "gpt-5.4-mini", displayName: "GPT-5.4 Mini" }
+    ];
+
+    const result = await fixture.service.executeText("/model", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "model");
+      assert.equal(result.result.kind, "card");
+      const cardJson = JSON.stringify(result.result.card);
+      assert.match(cardJson, /模型列表/);
+      assert.match(cardJson, /\/model gpt-5.4-mini/);
+      assert.match(cardJson, /当前模型/);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("/model update 已废弃并提示使用 /model", async () => {
+  const fixture = createFixture();
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    const result = await fixture.service.executeText("/model update", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "model");
       assert.equal(result.result.kind, "message");
-      assert.match(result.result.body, /\/bind <agent>/);
-      assert.match(result.result.body, /\/agents/);
-      assert.match(result.result.body, /\/subagents/);
+      assert.match(result.result.body, /请直接使用 `\/model`/);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("/skills 会返回更易读的技能卡片", async () => {
+  const fixture = createFixture();
+  const worker = fixture.workers.getWorker("") as unknown as {
+    listSkills: () => Promise<Array<{ name: string; description: string }>>;
+  };
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    worker.listSkills = async () => [
+      { name: "zeta", description: "Zeta skill" },
+      { name: "alpha", description: "Alpha skill" }
+    ];
+
+    const result = await fixture.service.executeText("/skills", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "skills");
+      assert.equal(result.result.kind, "card");
+      const cardJson = JSON.stringify(result.result.card);
+      assert.match(cardJson, /可用 Skills \(2\)/);
+      assert.match(cardJson, /\*\*alpha\*\*/);
+      assert.match(cardJson, /\*\*zeta\*\*/);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("/switch 无参数会打开会话面板", async () => {
+  const fixture = createFixture();
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    const result = await fixture.service.executeText("/switch", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "switch");
+      assert.equal(result.result.kind, "card");
+      const cardJson = JSON.stringify(result.result.card);
+      assert.match(cardJson, /会话列表/);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("/rename 无参数会打开重命名面板", async () => {
+  const fixture = createFixture();
+
+  try {
+    const { workspace } = await bindDefaultWorkspace(fixture);
+    seedThreadState(fixture, workspace);
+    const result = await fixture.service.executeText("/rename", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "rename");
+      assert.equal(result.result.kind, "card");
+      const cardJson = JSON.stringify(result.result.card);
+      assert.match(cardJson, /重命名线程/);
+      assert.match(cardJson, /\/rename /);
     }
   } finally {
     fixture.cleanup();
