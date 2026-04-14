@@ -18,6 +18,7 @@ import {
 export type FeishuCommandDispatchResult = {
   routeResult: CommandRouteResult<CommandResponse>;
   replyContext: FeishuReplyContext;
+  actorOpenId: string;
 };
 
 export type FeishuMessageExecutionHooks = {
@@ -75,7 +76,8 @@ export class FeishuMessageService {
 
     return {
       routeResult: await this.commands.executeInput(normalized.input, session, commandHooks),
-      replyContext
+      replyContext,
+      actorOpenId: session.actor.openId
     };
   }
 
@@ -129,7 +131,8 @@ export class FeishuMessageService {
 
     return {
       routeResult: await this.commands.executeText(command, session),
-      replyContext: createReplyContextFromCardAction(effectiveContext, actionValue)
+      replyContext: createReplyContextFromCardAction(effectiveContext, actionValue),
+      actorOpenId: session.actor.openId
     };
   }
 
@@ -230,6 +233,7 @@ function createReplyContextFromText(
   return {
     chatId: context.chatId,
     messageId: context.messageId,
+    chatType: context.chatType,
     ...(context.rootMessageId ? { rootMessageId: context.rootMessageId } : {}),
     ...(context.parentMessageId
       ? { parentMessageId: context.parentMessageId }
@@ -267,6 +271,9 @@ function createReplyContextFromCardAction(
       pickString(actionValue.chat_id, actionValue.chatId) ??
       "",
     messageId: context.open_message_id ?? "",
+    ...(pickString(actionValue.chat_type, actionValue.chatType)
+      ? { chatType: pickString(actionValue.chat_type, actionValue.chatType) as FeishuTextMessageContext["chatType"] }
+      : {}),
     ...(rootMessageId ? { rootMessageId } : {}),
     ...(parentMessageId ? { parentMessageId } : {}),
     ...(threadId ? { threadId } : {}),

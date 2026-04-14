@@ -107,6 +107,7 @@ export type FeishuReplyContext = {
   rootMessageId?: string;
   parentMessageId?: string;
   threadId?: string;
+  chatType?: FeishuChatType;
   replyInThread: boolean;
 };
 

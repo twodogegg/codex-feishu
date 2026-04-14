@@ -8,10 +8,30 @@ export type FeishuSdkShape = {
         reply?: (payload: unknown) => Promise<unknown>;
         create?: (payload: unknown) => Promise<unknown>;
         patch?: (payload: unknown) => Promise<unknown>;
+        pushFollowUp?: (payload: unknown) => Promise<unknown>;
+        readUsers?: (payload: unknown) => Promise<unknown>;
+      };
+      pin?: {
+        create?: (payload: unknown) => Promise<unknown>;
+      };
+      reaction?: {
+        create?: (payload: unknown) => Promise<unknown>;
       };
       file?: {
         create?: (payload: unknown) => Promise<unknown>;
       };
+    };
+  };
+  interactive?: {
+    v1?: {
+      card?: {
+        update?: (payload: unknown) => Promise<unknown>;
+      };
+    };
+  };
+  ephemeral?: {
+    v1?: {
+      send?: (payload: unknown) => Promise<unknown>;
     };
   };
 };
@@ -51,6 +71,61 @@ export class FeishuClient {
       },
       data: {
         content: JSON.stringify(card)
+      }
+    });
+  }
+
+  async delayUpdateCard(updateToken: string, card: unknown): Promise<void> {
+    const update = this.client.interactive?.v1?.card?.update;
+    if (!update) {
+      throw new Error("Feishu SDK missing interactive.v1.card.update");
+    }
+
+    await update({
+      data: {
+        token: updateToken,
+        card
+      }
+    });
+  }
+
+  async sendEphemeralCard(
+    chatId: string,
+    openId: string,
+    card: unknown
+  ): Promise<string | undefined> {
+    const send = this.client.ephemeral?.v1?.send;
+    if (!send) {
+      throw new Error("Feishu SDK missing ephemeral.v1.send");
+    }
+
+    const response = await send({
+      data: {
+        open_id: openId,
+        chat_id: chatId,
+        msg_type: "interactive",
+        card
+      }
+    });
+
+    return extractMessageId(response);
+  }
+
+  async pushFollowUp(
+    messageId: string,
+    followUps: Array<{ content: string }>
+  ): Promise<void> {
+    const pushFollowUp = this.client.im?.v1?.message?.pushFollowUp;
+    if (!pushFollowUp) {
+      throw new Error("Feishu SDK missing message.pushFollowUp");
+    }
+
+    await pushFollowUp({
+      path: {
+        message_id: messageId
+      },
+      data: {
+        follow_ups: followUps
       }
     });
   }

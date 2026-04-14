@@ -67,16 +67,44 @@ export class FeishuBotRuntime {
             }
 
             await feishuClient.patchCard(streamMessageId, card);
+            if (
+              update.state === "completed" &&
+              replyContext.chatType === "p2p" &&
+              streamMessageId
+            ) {
+              await feishuClient
+                .pushFollowUp(streamMessageId, [
+                  { content: "/status" },
+                  { content: "/new" }
+                ])
+                .catch(() => undefined);
+            }
           }
         });
         if (!dispatch) {
           return;
         }
 
-        const { routeResult: result, replyContext } = dispatch;
+        const { routeResult: result, replyContext, actorOpenId } = dispatch;
 
         if (result.kind === "handled") {
           if (result.result.kind === "noop") {
+            return;
+          }
+          if (
+            result.result.kind === "card" &&
+            replyContext.chatType === "group" &&
+            shouldUseEphemeralCard(result.commandName)
+          ) {
+            await feishuClient
+              .sendEphemeralCard(
+                replyContext.chatId,
+                actorOpenId,
+                attachCardActionContext(replyContext, result.result.card)
+              )
+              .catch(async () => {
+                await feishuClient.sendCommandResponse(replyContext, result.result);
+              });
             return;
           }
           await feishuClient.sendCommandResponse(replyContext, result.result);
@@ -126,8 +154,20 @@ export class FeishuBotRuntime {
     }
 
     const { routeResult: result, replyContext } = dispatch;
+    const callbackToken = extractCardCallbackToken(data);
 
     if (result.kind === "handled") {
+      if (callbackToken && result.result.kind === "card") {
+        await feishuClient
+          .delayUpdateCard(
+            callbackToken,
+            attachCardActionContext(replyContext, result.result.card)
+          )
+          .catch(async () => {
+            await feishuClient.sendCommandResponse(replyContext, result.result);
+          });
+        return;
+      }
       await feishuClient.sendCommandResponse(replyContext, result.result);
       return;
     }
@@ -356,4 +396,75 @@ function buildCardCallbackResponse(toast: string): Record<string, unknown> {
       content: toast
     }
   };
+}
+
+function shouldUseEphemeralCard(commandName: string): boolean {
+  return commandName === "help" || commandName === "model" || commandName === "skills";
+}
+
+function attachCardActionContext(
+  replyContext: {
+    chatId: string;
+    threadId?: string;
+    rootMessageId?: string;
+    parentMessageId?: string;
+    replyInThread: boolean;
+  },
+  card: unknown
+): unknown {
+  if (Array.isArray(card)) {
+    return card.map((item) => attachCardActionContext(replyContext, item));
+  }
+  if (!card || typeof card !== "object") {
+    return card;
+  }
+
+  const record = card as Record<string, unknown>;
+  const next: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (key === "value" && value && typeof value === "object" && !Array.isArray(value)) {
+      const actionValue = value as Record<string, unknown>;
+      next[key] = {
+        ...actionValue,
+        ...(replyContext.chatId && actionValue.chat_id == null
+          ? { chat_id: replyContext.chatId }
+          : {}),
+        ...(replyContext.threadId && actionValue.thread_id == null
+          ? { thread_id: replyContext.threadId }
+          : {}),
+        ...(replyContext.rootMessageId && actionValue.root_id == null
+          ? { root_id: replyContext.rootMessageId }
+          : {}),
+        ...(replyContext.parentMessageId && actionValue.parent_id == null
+          ? { parent_id: replyContext.parentMessageId }
+          : {}),
+        ...(actionValue.reply_in_thread == null
+          ? { reply_in_thread: replyContext.replyInThread }
+          : {})
+      };
+      continue;
+    }
+    next[key] = attachCardActionContext(replyContext, value);
+  }
+  return next;
+}
+
+function extractCardCallbackToken(data: unknown): string | undefined {
+  if (!data || typeof data !== "object") {
+    return undefined;
+  }
+
+  const payload = data as {
+    token?: unknown;
+    event?: {
+      token?: unknown;
+    };
+  };
+  if (typeof payload.event?.token === "string" && payload.event.token.trim()) {
+    return payload.event.token.trim();
+  }
+  if (typeof payload.token === "string" && payload.token.trim()) {
+    return payload.token.trim();
+  }
+  return undefined;
 }
