@@ -40,8 +40,10 @@
 | `/message` | 查看当前线程最近消息 | 别名：`/messages` |
 | `/switch <threadId>` | 切换 active thread | 支持本地 threadId / codexThreadId |
 | `/new` | 新建线程并切换 | - |
+| `/fork` | 从当前线程分叉新线程并切换 | 可选：`/fork <threadId>` |
 | `/rename <name>` | 重命名当前线程 | - |
 | `/stop` | 中断当前执行中的 turn | - |
+| `/recall` | 撤回机器人最近发送的一条消息 | 按当前会话维度 |
 | `/subagents` | 列出当前主线程下的 sub-agent 线程 | 别名：`/subagent` |
 | `/subagents switch <threadId>` | 切换到指定 sub-agent 线程 | - |
 | `/subagents back` | 返回主线程 | - |
@@ -81,8 +83,11 @@
 - 群聊中，上述卡片优先尝试“仅操作者可见”发送（ephemeral）；若失败自动回退普通卡片回复。
 - 卡片回调处理支持延时更新（异步完成后优先更新原卡片）。
 - 在与机器人单聊（`p2p`）中，流式回复完成后会尝试添加跟随气泡，当前默认快捷项为：
-  - `/status`
-  - `/new`
+  - `请说中文`
+  - `我不是这个意思`
+  - `继续`
+  - `重做`
+  - `按你说的做`
 
 ## 快速开始
 

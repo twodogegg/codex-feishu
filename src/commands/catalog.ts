@@ -158,6 +158,20 @@ const COMMAND_DEFINITIONS: readonly CommandDefinition[] = [
       "/subagents back"
     ],
     aliases: ["subagent"]
+  },
+  {
+    name: "fork",
+    category: "thread",
+    summary: "从当前线程分叉新线程并切换。",
+    usage: ["/fork", "/fork <threadId>"],
+    aliases: []
+  },
+  {
+    name: "recall",
+    category: "thread",
+    summary: "撤回机器人最近发送的一条消息。",
+    usage: ["/recall"],
+    aliases: ["撤回"]
   }
 ] as const;
 

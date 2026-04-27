@@ -29,7 +29,7 @@ export type FeishuMessage = {
   thread_id?: string;
   chat_type?: string;
   message_type?: string;
-  content?: string | { text?: string };
+  content?: string | { text?: string; image_key?: string; file_key?: string };
   mentions?: FeishuMention[];
   create_time?: string;
   update_time?: string;

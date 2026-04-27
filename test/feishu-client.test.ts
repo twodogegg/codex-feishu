@@ -26,6 +26,10 @@ function createRecordingSdk() {
             patch: async (payload: unknown) => {
               calls.push({ method: "patch", payload });
               return {};
+            },
+            delete: async (payload: unknown) => {
+              calls.push({ method: "delete", payload });
+              return {};
             }
           },
           file: {
@@ -34,6 +38,16 @@ function createRecordingSdk() {
               return {
                 data: {
                   file_key: "file_key_1"
+                }
+              };
+            }
+          },
+          image: {
+            create: async (payload: unknown) => {
+              calls.push({ method: "image.create", payload });
+              return {
+                data: {
+                  image_key: "img_key_1"
                 }
               };
             }
@@ -270,6 +284,23 @@ test("patchCard 会原地更新 interactive 消息", async () => {
   });
 });
 
+test("deleteMessage 会撤回消息", async () => {
+  const { calls, sdk } = createRecordingSdk();
+  const client = new FeishuClient(sdk);
+
+  await client.deleteMessage("om_delete_1");
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    method: "delete",
+    payload: {
+      path: {
+        message_id: "om_delete_1"
+      }
+    }
+  });
+});
+
 test("sendCommandResponse 会把话题上下文注入卡片按钮 payload", async () => {
   const { calls, sdk } = createRecordingSdk();
   const client = new FeishuClient(sdk);
@@ -339,6 +370,67 @@ test("sendCommandResponse 会把话题上下文注入卡片按钮 payload", asyn
             ]
           }
         }),
+        reply_in_thread: true
+      }
+    }
+  });
+});
+
+test("sendCommandResponse 发送图片路径时会走 image 消息", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-feishu-image-"));
+  const imagePath = path.join(tempDir, "diagram.png");
+  fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+  const { calls, sdk } = createRecordingSdk();
+  const client = new FeishuClient(sdk);
+
+  await client.sendCommandResponseWithMessageIds(
+    {
+      chatId: "oc_chat_img",
+      messageId: "om_reply_img",
+      replyInThread: true
+    },
+    {
+      kind: "file",
+      title: "发送图片",
+      body: "图片已发送",
+      filePath: imagePath
+    }
+  );
+
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[0], {
+    method: "image.create",
+    payload: {
+      data: {
+        image_type: "message",
+        image_name: "diagram.png",
+        image: Buffer.from([0x89, 0x50, 0x4e, 0x47])
+      }
+    }
+  });
+  assert.deepEqual(calls[1], {
+    method: "reply",
+    payload: {
+      path: {
+        message_id: "om_reply_img"
+      },
+      data: {
+        msg_type: "text",
+        content: JSON.stringify({ text: "图片已发送" }),
+        reply_in_thread: true
+      }
+    }
+  });
+  assert.deepEqual(calls[2], {
+    method: "reply",
+    payload: {
+      path: {
+        message_id: "om_reply_img"
+      },
+      data: {
+        msg_type: "image",
+        content: JSON.stringify({ image_key: "img_key_1" }),
         reply_in_thread: true
       }
     }

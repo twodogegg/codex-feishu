@@ -15,6 +15,11 @@ type PendingRequest = {
   reject: (error: Error) => void;
 };
 
+type InFlightTurn = {
+  unsubscribe: () => void;
+  reject: (error: Error) => void;
+};
+
 export type CodexThreadSummary = {
   id: string;
   cwd: string;
@@ -57,6 +62,7 @@ export class CodexAppServerClient {
   private stdoutBuffer = "";
   private readonly pending = new Map<string, PendingRequest>();
   private readonly listeners = new Set<(message: JsonRpcMessage) => void>();
+  private readonly inFlightTurns = new Map<string, InFlightTurn>();
   private initialized = false;
 
   constructor(private readonly codexCommand: string) {}
@@ -94,6 +100,9 @@ export class CodexAppServerClient {
 
     this.child.on("close", (code) => {
       console.error(`[codex-feishu] codex app-server exited code=${code ?? -1}`);
+      this.rejectPendingAndTurns(
+        new Error(`codex app-server exited code=${code ?? -1}`)
+      );
       this.child = null;
       this.initialized = false;
     });
@@ -154,6 +163,28 @@ export class CodexAppServerClient {
       approvalPolicy: "never",
       sandbox: "danger-full-access"
     });
+  }
+
+  async forkThread(threadId: string, cwd: string): Promise<CodexThreadSummary> {
+    const response = (await this.sendRequest("thread/fork", {
+      threadId,
+      cwd,
+      approvalPolicy: "never",
+      sandbox: "danger-full-access",
+      persistExtendedHistory: true
+    })) as {
+      thread: {
+        id: string;
+        cwd: string;
+        name: string | null;
+        preview?: string | null;
+        status: string;
+        updatedAt: number;
+        path: string | null;
+      };
+    };
+
+    return mapThreadSummary(response.thread);
   }
 
   async listThreads(cwd: string): Promise<CodexThreadSummary[]> {
@@ -290,6 +321,7 @@ export class CodexAppServerClient {
     return new Promise<CodexTurnRunResult>((resolve, reject) => {
       let aggregatedText = "";
       let latestTokenUsage: CodexThreadTokenUsage | undefined;
+      let settled = false;
       const unsubscribe = this.onMessage((message) => {
         if (message.method === "item/agentMessage/delta") {
           const params = message.params as
@@ -341,7 +373,7 @@ export class CodexAppServerClient {
             return;
           }
 
-          unsubscribe();
+          settle();
           if (params.turn.status === "failed") {
             reject(
               new Error(params.turn.error?.message || "Codex turn failed")
@@ -358,6 +390,22 @@ export class CodexAppServerClient {
           });
         }
       });
+      const turnKey = buildInFlightTurnKey(threadId, turnId);
+      const settle = () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.inFlightTurns.delete(turnKey);
+        unsubscribe();
+      };
+      this.inFlightTurns.set(turnKey, {
+        unsubscribe,
+        reject: (error) => {
+          settle();
+          reject(error);
+        }
+      });
     });
   }
 
@@ -367,8 +415,21 @@ export class CodexAppServerClient {
     }
 
     this.child.kill();
+    this.rejectPendingAndTurns(new Error("codex app-server closed"));
     this.child = null;
     this.initialized = false;
+  }
+
+  private rejectPendingAndTurns(error: Error): void {
+    for (const [requestId, pending] of this.pending) {
+      this.pending.delete(requestId);
+      pending.reject(error);
+    }
+
+    for (const [turnKey, turn] of this.inFlightTurns) {
+      this.inFlightTurns.delete(turnKey);
+      turn.reject(error);
+    }
   }
 
   private async sendRequest(method: string, params: unknown): Promise<unknown> {
@@ -455,6 +516,10 @@ function mapThreadSummary(thread: {
     updatedAt: normalizeTimestamp(thread.updatedAt),
     codexPath: thread.path
   };
+}
+
+function buildInFlightTurnKey(threadId: string, turnId: string): string {
+  return `${threadId}:${turnId}`;
 }
 
 function normalizeTimestamp(value: number): number {

@@ -180,6 +180,8 @@ function createHandlers(): CommandHandlerMap<HandlerContext, CommandResponse> {
     message: (_input, context) => handleMessageCommand(context),
     switch: (input, context) => handleSwitchCommand(input.argText, context),
     new: (_input, context) => handleNewCommand(context),
+    fork: (input, context) => handleForkCommand(input.argText, context),
+    recall: (_input, context) => handleRecallCommand(),
     stop: (_input, context) => handleStopCommand(context),
     model: (input, context) => handleModelCommand(input.argText, context),
     effort: (input, context) => handleEffortCommand(input.argText, context),
@@ -546,6 +548,67 @@ async function handleNewCommand(context: HandlerContext): Promise<CommandRespons
     "新线程已创建",
     [`thread: \`${thread.id}\``, `codexThreadId: \`${thread.codexThreadId}\``].join("\n")
   );
+}
+
+async function handleForkCommand(
+  threadSelector: string,
+  context: HandlerContext
+): Promise<CommandResponse> {
+  const state = requireBoundWorkspaceState(context);
+  if ("kind" in state) {
+    return state;
+  }
+
+  const worker = ensureWorkspaceWorker(context, state.workspace);
+  await syncWorkspaceThreads(context, state.workspace, worker);
+
+  const selector = threadSelector.trim();
+  const targetThread = selector
+    ? context.db.threads
+        .listByWorkspaceId(state.workspace.id)
+        .find((thread) => matchesThreadSelector(thread, selector))
+    : state.thread;
+
+  if (!targetThread) {
+    return messageResponse(
+      "缺少可分叉线程",
+      selector
+        ? `当前 agent 下找不到线程：\`${selector}\``
+        : "当前会话没有可分叉的 active 线程。"
+    );
+  }
+
+  const forked = await worker.forkThread(targetThread.codexThreadId);
+  const forkThread = context.db.threads.upsert({
+    id: randomUUID(),
+    workspaceId: state.workspace.id,
+    codexThreadId: forked.id,
+    name: forked.name,
+    kind: "main",
+    status: mapRemoteThreadStatus(forked.status),
+    metadata: {
+      updatedAt: forked.updatedAt,
+      codexPath: forked.codexPath,
+      cwd: forked.cwd,
+      preview: normalizeThreadSummaryText(forked.preview, 160)
+    },
+    isActive: true
+  });
+
+  setActiveThreadForSession(context, state.binding, state.workspace, forkThread.id);
+
+  return messageResponse(
+    "分叉成功",
+    [
+      `from: \`${targetThread.id}\``,
+      `thread: \`${forkThread.id}\``,
+      `codexThreadId: \`${forkThread.codexThreadId}\``
+    ].join("\n")
+  );
+}
+
+function handleRecallCommand(): CommandResponse {
+  return messageResponse("撤回请求", "正在撤回机器人最近发送的一条消息...");
 }
 
 async function handleStopCommand(context: HandlerContext): Promise<CommandResponse> {
@@ -1424,6 +1487,7 @@ async function syncWorkspaceThreads(
 
   for (const remoteThread of remoteThreads) {
     const existing = context.db.threads.getByCodexThreadId(remoteThread.id);
+    const normalizedPreview = normalizeThreadSummaryText(remoteThread.preview, 160);
     context.db.threads.upsert({
       id: existing?.id ?? randomUUID(),
       workspaceId: workspace.id,
@@ -1435,7 +1499,7 @@ async function syncWorkspaceThreads(
         updatedAt: remoteThread.updatedAt,
         codexPath: remoteThread.codexPath,
         cwd: remoteThread.cwd,
-        preview: remoteThread.preview
+        preview: normalizedPreview
       },
       isActive:
         workspace.lastActiveThreadId != null &&
@@ -1493,7 +1557,7 @@ async function ensureWorkspaceThread(
       updatedAt: created.updatedAt,
       codexPath: created.codexPath,
       cwd: created.cwd,
-      preview: created.preview
+      preview: normalizeThreadSummaryText(created.preview, 160)
     },
     isActive: true
   });
@@ -1516,15 +1580,7 @@ async function hydrateRecentThreadPreviews(
   for (const thread of recentThreads) {
     const existingPreview =
       typeof thread.metadata.preview === "string" ? thread.metadata.preview.trim() : "";
-    const existingUserText =
-      typeof thread.metadata.lastUserText === "string"
-        ? thread.metadata.lastUserText.trim()
-        : "";
-    const existingAgentText =
-      typeof thread.metadata.lastAgentText === "string"
-        ? thread.metadata.lastAgentText.trim()
-        : "";
-    if (existingPreview && existingUserText && existingAgentText) {
+    if (existingPreview) {
       continue;
     }
 
@@ -1867,40 +1923,51 @@ function formatThreadUpdatedAt(thread: ThreadRecord): string {
 }
 
 function formatThreadPreview(thread: ThreadRecord): string {
-  const lines: string[] = [];
-  const userText =
-    typeof thread.metadata.lastUserText === "string"
-      ? thread.metadata.lastUserText.trim()
-      : "";
+  const preview =
+    typeof thread.metadata.preview === "string" ? thread.metadata.preview.trim() : "";
   const agentText =
     typeof thread.metadata.lastAgentText === "string"
       ? thread.metadata.lastAgentText.trim()
       : "";
-  const preview =
-    typeof thread.metadata.preview === "string" ? thread.metadata.preview.trim() : "";
+  const userText =
+    typeof thread.metadata.lastUserText === "string"
+      ? thread.metadata.lastUserText.trim()
+      : "";
+  const summaryText = preview || agentText || userText;
 
-  if (userText) {
-    lines.push(`用户: ${sanitizeCardMarkdown(truncateThreadLine(userText, 56))}`);
-  }
-  if (agentText) {
-    lines.push(`Codex: ${sanitizeCardMarkdown(truncateThreadLine(agentText, 56))}`);
-  } else if (preview) {
-    lines.push(`摘要: ${sanitizeCardMarkdown(truncateThreadLine(preview, 72))}`);
+  if (summaryText) {
+    return `摘要: ${sanitizeCardMarkdown(truncateThreadLine(summaryText, 52))}`;
   }
 
-  return lines.join("\n");
+  return "摘要: 暂无";
 }
 
 function resolveSessionDisplayTitle(thread: ThreadRecord): string {
-  const name = thread.name?.trim();
-  if (name) {
-    return name;
-  }
-
   const preview =
     typeof thread.metadata.preview === "string" ? thread.metadata.preview.trim() : "";
   if (preview) {
-    return truncateThreadLine(preview, 28);
+    return truncateThreadLine(preview, 24);
+  }
+
+  const name = thread.name?.trim();
+  if (name) {
+    return truncateThreadLine(name, 24);
+  }
+
+  const agentText =
+    typeof thread.metadata.lastAgentText === "string"
+      ? thread.metadata.lastAgentText.trim()
+      : "";
+  if (agentText) {
+    return truncateThreadLine(agentText, 24);
+  }
+
+  const userText =
+    typeof thread.metadata.lastUserText === "string"
+      ? thread.metadata.lastUserText.trim()
+      : "";
+  if (userText) {
+    return truncateThreadLine(userText, 24);
   }
 
   return "未命名会话";
@@ -1917,6 +1984,7 @@ function truncateThreadLine(text: string, maxLength: number): string {
 
 function extractThreadSummary(response: {
   thread?: {
+    preview?: string | null;
     turns?: Array<{
       items?: Array<
         | { type: "userMessage"; content?: Array<{ text?: string }> }
@@ -1947,11 +2015,20 @@ function extractThreadSummary(response: {
     }
   }
 
+  const threadPreview = normalizeThreadSummaryText(response.thread?.preview, 160);
+  const normalizedUserText = normalizeThreadSummaryText(lastUserText, 160);
+  const normalizedAgentText = normalizeThreadSummaryText(lastAgentText, 160);
+
   return {
-    preview: lastAgentText || lastUserText,
-    lastUserText,
-    lastAgentText
+    preview: threadPreview || normalizedAgentText || normalizedUserText,
+    lastUserText: normalizedUserText,
+    lastAgentText: normalizedAgentText
   };
+}
+
+function normalizeThreadSummaryText(value: unknown, maxLength: number): string {
+  const text = String(value || "").replace(/```[\s\S]*?```/g, " ").trim();
+  return truncateThreadLine(text, maxLength);
 }
 
 function buildWorkspaceListCard(

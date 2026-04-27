@@ -8,6 +8,7 @@ export type FeishuSdkShape = {
         reply?: (payload: unknown) => Promise<unknown>;
         create?: (payload: unknown) => Promise<unknown>;
         patch?: (payload: unknown) => Promise<unknown>;
+        delete?: (payload: unknown) => Promise<unknown>;
         pushFollowUp?: (payload: unknown) => Promise<unknown>;
         readUsers?: (payload: unknown) => Promise<unknown>;
       };
@@ -18,6 +19,9 @@ export type FeishuSdkShape = {
         create?: (payload: unknown) => Promise<unknown>;
       };
       file?: {
+        create?: (payload: unknown) => Promise<unknown>;
+      };
+      image?: {
         create?: (payload: unknown) => Promise<unknown>;
       };
     };
@@ -71,6 +75,19 @@ export class FeishuClient {
       },
       data: {
         content: JSON.stringify(card)
+      }
+    });
+  }
+
+  async deleteMessage(messageId: string): Promise<void> {
+    const remove = this.client.im?.v1?.message?.delete;
+    if (!remove) {
+      throw new Error("Feishu SDK missing message.delete");
+    }
+
+    await remove({
+      path: {
+        message_id: messageId
       }
     });
   }
@@ -159,21 +176,33 @@ export class FeishuClient {
     replyContext: FeishuReplyContext,
     response: CommandResponse
   ): Promise<void> {
+    await this.sendCommandResponseWithMessageIds(replyContext, response);
+  }
+
+  async sendCommandResponseWithMessageIds(
+    replyContext: FeishuReplyContext,
+    response: CommandResponse
+  ): Promise<string[]> {
     if (response.kind === "noop") {
-      return;
+      return [];
     }
 
     if (response.kind === "card") {
-      await this.replyCard(replyContext, withCardActionContext(response.card, replyContext));
-      return;
+      const messageId = await this.replyCard(
+        replyContext,
+        withCardActionContext(response.card, replyContext)
+      );
+      return messageId ? [messageId] : [];
     }
 
     if (response.kind === "file") {
-      await this.sendFileReply(replyContext, response.filePath, response.body);
-      return;
+      if (isImagePath(response.filePath)) {
+        return this.sendImageReply(replyContext, response.filePath, response.body);
+      }
+      return this.sendFileReply(replyContext, response.filePath, response.body);
     }
 
-    await this.replyCard(replyContext, withCardActionContext({
+    const messageId = await this.replyCard(replyContext, withCardActionContext({
       schema: "2.0",
       config: {
         update_multi: true,
@@ -195,21 +224,22 @@ export class FeishuClient {
         ]
       }
     }, replyContext));
+    return messageId ? [messageId] : [];
   }
 
-  async replyText(replyContext: FeishuReplyContext, text: string): Promise<void>;
-  async replyText(messageId: string, text: string): Promise<void>;
+  async replyText(replyContext: FeishuReplyContext, text: string): Promise<string | undefined>;
+  async replyText(messageId: string, text: string): Promise<string | undefined>;
   async replyText(
     replyContextOrMessageId: FeishuReplyContext | string,
     text: string
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const reply = this.client.im?.v1?.message?.reply;
     if (!reply) {
       throw new Error("Feishu SDK missing message.reply");
     }
     const replyContext = normalizeReplyContext(replyContextOrMessageId);
 
-    await reply({
+    const response = await reply({
       path: {
         message_id: replyContext.messageId
       },
@@ -221,35 +251,36 @@ export class FeishuClient {
         replyContext
       )
     });
+    return extractMessageId(response);
   }
 
-  async replyCard(replyContext: FeishuReplyContext, card: unknown): Promise<void>;
-  async replyCard(messageId: string, card: unknown): Promise<void>;
+  async replyCard(replyContext: FeishuReplyContext, card: unknown): Promise<string | undefined>;
+  async replyCard(messageId: string, card: unknown): Promise<string | undefined>;
   async replyCard(
     replyContextOrMessageId: FeishuReplyContext | string,
     card: unknown
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const replyContext = normalizeReplyContext(replyContextOrMessageId);
-    await this.sendReplyCard(replyContext, card);
+    return this.sendReplyCard(replyContext, card);
   }
 
   async sendFileReply(
     replyContext: FeishuReplyContext,
     filePath: string,
     caption: string
-  ): Promise<void>;
+  ): Promise<string[]>;
   async sendFileReply(
     chatId: string,
     messageId: string,
     filePath: string,
     caption: string
-  ): Promise<void>;
+  ): Promise<string[]>;
   async sendFileReply(
     arg1: FeishuReplyContext | string,
     arg2: string,
     arg3: string,
     arg4?: string
-  ): Promise<void> {
+  ): Promise<string[]> {
     const createFile = this.client.im?.v1?.file?.create;
     const reply = this.client.im?.v1?.message?.reply;
     if (!createFile || !reply) {
@@ -281,7 +312,7 @@ export class FeishuClient {
       throw new Error("Feishu file upload missing file_key");
     }
 
-    await reply({
+    const captionResponse = await reply({
       path: {
         message_id: replyContext.messageId
       },
@@ -294,7 +325,7 @@ export class FeishuClient {
       )
     });
 
-    await reply({
+    const fileResponse = await reply({
       path: {
         message_id: replyContext.messageId
       },
@@ -308,6 +339,73 @@ export class FeishuClient {
         replyContext
       )
     });
+
+    const sentIds = [
+      extractMessageId(captionResponse),
+      extractMessageId(fileResponse)
+    ].filter((item): item is string => Boolean(item));
+    return sentIds;
+  }
+
+  async sendImageReply(
+    replyContext: FeishuReplyContext,
+    filePath: string,
+    caption: string
+  ): Promise<string[]> {
+    const createImage = this.client.im?.v1?.image?.create;
+    const reply = this.client.im?.v1?.message?.reply;
+    if (!createImage || !reply) {
+      throw new Error("Feishu SDK missing image/message methods");
+    }
+
+    const fs = await import("node:fs/promises");
+    const path = await import("node:path");
+    const imageBuffer = await fs.readFile(filePath);
+    const uploadResult = (await createImage({
+      data: {
+        image_type: "message",
+        image_name: path.basename(filePath),
+        image: imageBuffer
+      }
+    })) as { data?: { image_key?: string } };
+    const imageKey = uploadResult.data?.image_key;
+    if (!imageKey) {
+      throw new Error("Feishu image upload missing image_key");
+    }
+
+    const sentIds: Array<string | undefined> = [];
+    if (caption.trim()) {
+      const captionResponse = await reply({
+        path: {
+          message_id: replyContext.messageId
+        },
+        data: withReplyOptions(
+          {
+            msg_type: "text",
+            content: JSON.stringify({ text: caption })
+          },
+          replyContext
+        )
+      });
+      sentIds.push(extractMessageId(captionResponse));
+    }
+
+    const imageResponse = await reply({
+      path: {
+        message_id: replyContext.messageId
+      },
+      data: withReplyOptions(
+        {
+          msg_type: "image",
+          content: JSON.stringify({
+            image_key: imageKey
+          })
+        },
+        replyContext
+      )
+    });
+    sentIds.push(extractMessageId(imageResponse));
+    return sentIds.filter((item): item is string => Boolean(item));
   }
 }
 
@@ -353,6 +451,19 @@ function resolveCardTemplate(title: string): string {
     return "blue";
   }
   return "turquoise";
+}
+
+function isImagePath(filePath: string): boolean {
+  const lowerPath = filePath.toLowerCase();
+  return (
+    lowerPath.endsWith(".png") ||
+    lowerPath.endsWith(".jpg") ||
+    lowerPath.endsWith(".jpeg") ||
+    lowerPath.endsWith(".gif") ||
+    lowerPath.endsWith(".bmp") ||
+    lowerPath.endsWith(".webp") ||
+    lowerPath.endsWith(".heic")
+  );
 }
 
 function sanitizeCardMarkdown(text: string): string {

@@ -284,3 +284,58 @@ test("卡片回调会优先使用 value.chat_id 恢复会话上下文", async ()
   assert.equal(calls[0]?.session.chatId, "oc_card_1");
   assert.equal(calls[0]?.session.threadKey, "ot_card_1");
 });
+
+test("图片消息会被识别并返回 image_key 回执", async () => {
+  let callCount = 0;
+  const commands = {
+    executeInput: async (): Promise<CommandRouteResult<CommandResponse>> => {
+      callCount += 1;
+      return {
+        kind: "handled",
+        commandName: "message",
+        result: {
+          kind: "message",
+          title: "ok",
+          body: "done"
+        }
+      };
+    }
+  };
+
+  const service = new FeishuMessageService(commands as never, {
+    botOpenId: "ou_bot",
+    requireBotMentionInGroup: false
+  });
+
+  const result = await service.handleTextEvent({
+    header: {
+      event_id: "evt_img_1"
+    },
+    event: {
+      sender: {
+        sender_id: {
+          open_id: "ou_user"
+        },
+        sender_type: "user"
+      },
+      message: {
+        message_id: "om_img_1",
+        chat_id: "oc_1",
+        chat_type: "p2p",
+        message_type: "image",
+        content: JSON.stringify({
+          image_key: "img_v3_123"
+        })
+      }
+    }
+  } as FeishuTextMessageEvent);
+
+  assert.equal(callCount, 0);
+  assert.equal(result?.routeResult.kind, "handled");
+  if (result?.routeResult.kind === "handled") {
+    assert.equal(result.routeResult.commandName, "message");
+    assert.equal(result.routeResult.result.kind, "message");
+    assert.equal(result.routeResult.result.title, "已收到图片");
+    assert.match(result.routeResult.result.body, /img_v3_123/);
+  }
+});

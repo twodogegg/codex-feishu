@@ -20,7 +20,9 @@ export const SUPPORTED_COMMAND_NAMES = [
   "skills",
   "review",
   "rename",
-  "subagents"
+  "subagents",
+  "fork",
+  "recall"
 ] as const;
 
 export type CommandName = (typeof SUPPORTED_COMMAND_NAMES)[number];

@@ -122,6 +122,17 @@ function createFixture(options?: {
         codexPath: null
       };
     },
+    async forkThread(threadId: string) {
+      return {
+        id: `${threadId}_forked`,
+        name: "Forked Thread",
+        preview: "fork preview",
+        status: "created",
+        cwd: worker.workspaceRoot,
+        updatedAt: Date.now(),
+        codexPath: null
+      };
+    },
     resumedThreadIds: [] as string[],
     async resumeThread(threadId: string) {
       this.resumedThreadIds.push(threadId);
@@ -724,6 +735,55 @@ test("/rename 无参数会打开重命名面板", async () => {
   }
 });
 
+test("/fork 会从当前线程创建分叉线程并切换", async () => {
+  const fixture = createFixture();
+
+  try {
+    const { workspace } = await bindDefaultWorkspace(fixture);
+    const { mainThread } = seedThreadState(fixture, workspace);
+    const result = await fixture.service.executeText("/fork", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "fork");
+      assert.equal(result.result.kind, "message");
+      assert.equal(result.result.title, "分叉成功");
+      assert.match(result.result.body, new RegExp(mainThread.id));
+    }
+
+    const user = fixture.db.users.getByFeishuOpenId(fixture.session.actor.openId);
+    assert.ok(user);
+    const binding = fixture.db.sessionBindings.getBySession(
+      user.id,
+      fixture.session.chatId,
+      null
+    );
+    assert.ok(binding);
+    assert.ok(binding.activeThreadId);
+    assert.notEqual(binding.activeThreadId, mainThread.id);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("/recall 命令会被正确识别并路由", async () => {
+  const fixture = createFixture();
+
+  try {
+    await bindDefaultWorkspace(fixture);
+    const result = await fixture.service.executeText("/recall", fixture.session);
+
+    assert.equal(result.kind, "handled");
+    if (result.kind === "handled") {
+      assert.equal(result.commandName, "recall");
+      assert.equal(result.result.kind, "message");
+      assert.match(result.result.body, /正在撤回/);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("普通文本在提供流式 hook 时会输出 streaming 更新", async () => {
   const fixture = createFixture({
     streamedTextChunks: ["你好", "，世界"]
@@ -873,7 +933,7 @@ test("只会同步属于当前 workspace 的线程到当前视图", async () => 
     if (result.kind === "handled") {
       assert.equal(result.commandName, "sessions");
       assert.equal(result.result.kind, "card");
-      assert.match(JSON.stringify(result.result.card), /Workspace Thread/);
+      assert.match(JSON.stringify(result.result.card), /from workspace/);
       assert.doesNotMatch(JSON.stringify(result.result.card), /Other Thread/);
     }
 
@@ -1147,12 +1207,12 @@ test("/sessions 状态卡会展示最近线程并提供切换按钮", async () =
       assert.equal(result.result.kind, "card");
       const cardJson = JSON.stringify(result.result.card);
       assert.match(cardJson, /会话列表/);
-      assert.match(cardJson, /第二条对话/);
-      assert.match(cardJson, /第一条对话/);
       assert.match(cardJson, /workspace 卡片交互/);
+      assert.match(cardJson, /先帮我看一下当前线程状态/);
       assert.doesNotMatch(cardJson, /codex-thread-2/);
       assert.doesNotMatch(cardJson, /codex-thread-1/);
-      assert.doesNotMatch(cardJson, /codex:/);
+      assert.doesNotMatch(cardJson, /Codex:/);
+      assert.doesNotMatch(cardJson, /用户:/);
       assert.doesNotMatch(cardJson, /id: `/);
       assert.match(cardJson, /\/switch/);
     }
@@ -1232,9 +1292,9 @@ test("/sessions 2 会返回第二页线程列表", async () => {
     if (result.kind === "handled" && result.result.kind === "card") {
       const cardJson = JSON.stringify(result.result.card);
       assert.match(cardJson, /第 2\/2 页，共 12 条/);
-      assert.match(cardJson, /线程 11/);
-      assert.match(cardJson, /线程 12/);
-      assert.doesNotMatch(cardJson, /线程 1(?!\d)/);
+      assert.match(cardJson, /预览 11/);
+      assert.match(cardJson, /预览 12/);
+      assert.doesNotMatch(cardJson, /预览 1(?!\d)/);
     }
   } finally {
     fixture.cleanup();

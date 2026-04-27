@@ -77,6 +77,11 @@ export class CodexWorkspaceWorker {
     await this.client.resumeThread(threadId);
   }
 
+  async forkThread(threadId: string): Promise<CodexThreadSummary> {
+    await this.ensureReady();
+    return this.client.forkThread(threadId, this.workspaceRoot);
+  }
+
   async readThread(threadId: string, includeTurns = true): Promise<unknown> {
     await this.ensureReady();
     return this.client.readThread(threadId, includeTurns);

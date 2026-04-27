@@ -47,6 +47,21 @@ export class FeishuMessageService {
     if (!normalized.context.mention.shouldHandle) {
       return null;
     }
+    if (resolveMessageType(event) === "image") {
+      return {
+        routeResult: {
+          kind: "handled",
+          commandName: "message",
+          result: {
+            kind: "message",
+            title: "已收到图片",
+            body: buildImageReceivedMessage(event)
+          }
+        },
+        replyContext: createReplyContextFromText(normalized.context),
+        actorOpenId: normalized.context.sender.openId || "unknown-open-id"
+      };
+    }
 
     const threadKey = resolveConversationThreadKey(normalized.context);
     const session: CommandExecutionContext = {
@@ -316,6 +331,77 @@ function pickString(...values: unknown[]): string | undefined {
   }
 
   return undefined;
+}
+
+function resolveMessageType(event: FeishuTextMessageEvent): string {
+  const payload = resolveEventPayload(event);
+  return String(payload.message.message_type || "").trim().toLowerCase();
+}
+
+function resolveEventPayload(event: FeishuTextMessageEvent): {
+  sender: NonNullable<FeishuTextMessageEvent["event"]>["sender"];
+  message: NonNullable<FeishuTextMessageEvent["event"]>["message"];
+  chat_id?: string;
+  chat_type?: string;
+  mentions?: NonNullable<FeishuTextMessageEvent["event"]>["message"]["mentions"];
+} {
+  if (event.event?.message && event.event.sender) {
+    return event.event;
+  }
+
+  if (event.message && event.sender) {
+    return {
+      sender: event.sender,
+      message: event.message,
+      ...(event.chat_id ? { chat_id: event.chat_id } : {}),
+      ...(event.chat_type ? { chat_type: event.chat_type } : {}),
+      ...(event.mentions ? { mentions: event.mentions } : {})
+    };
+  }
+
+  throw new TypeError("Invalid Feishu message payload: missing sender/message");
+}
+
+function buildImageReceivedMessage(event: FeishuTextMessageEvent): string {
+  const payload = resolveEventPayload(event);
+  const imageKey = extractImageKey(payload.message.content);
+  if (imageKey) {
+    return `收到图片，image_key: \`${imageKey}\``;
+  }
+  return "收到图片，但未解析到 image_key。";
+}
+
+function extractImageKey(content: unknown): string | null {
+  if (content == null) {
+    return null;
+  }
+
+  if (typeof content === "object") {
+    const directValue = (content as { image_key?: unknown }).image_key;
+    if (typeof directValue === "string" && directValue.trim()) {
+      return directValue.trim();
+    }
+    return null;
+  }
+
+  if (typeof content !== "string") {
+    return null;
+  }
+
+  const trimmed = content.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as { image_key?: unknown };
+    if (typeof parsed.image_key === "string" && parsed.image_key.trim()) {
+      return parsed.image_key.trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function pickBoolean(...values: unknown[]): boolean | undefined {
